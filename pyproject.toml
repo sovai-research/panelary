@@ -146,7 +146,7 @@ dev = [
   # Pinned to match `uvx ruff@0.15.10` in .github/workflows/ci.yml and the rev
   # in .pre-commit-config.yaml. An unpinned floor let contributors format with
   # a newer ruff whose output CI's older ruff then rejected.
-  "ruff==0.15.10",
+  "ruff==0.16.7",
   "pytest>=8.0",
   "hypothesis>=6.0",
   "mypy>=1.8",
