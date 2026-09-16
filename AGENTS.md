@@ -1,220 +1,43 @@
-# AGENTS.md
+# AGENTS.md — panelary
 
-Instructions for AI coding agents working on **Panelary** (import name and PyPI
-distribution `panelary`, version 0.5.0). Human-facing docs live in `README.md`,
-`CONTRIBUTING.md` and `docs/`; this file is the agent-facing contract.
+## Prime directive
 
-## Project overview
+**This project's first customer is AgenticFinance.**
 
-Panelary is a leak-safe, Polars-native feature-engineering and ML toolkit for
-**panel data** (many entities observed over time). It is pure Python (the Rust
-extension was dropped in 0.4.0 — the distribution is a single universal
-`py3-none-any` wheel). It is derived from [functime](https://github.com/functime-org/functime)
-(Apache-2.0) and retains that license; see `NOTICE`.
+Its job right now is to build software — SDKs, APIs, MCP servers, harnesses — that the
+AgenticFinance assessment engine actually calls. Becoming an independent product comes
+later, and only on the strength of what that work proves.
 
-- **Names.** There is exactly one: the project is **Panelary**, the PyPI
-  distribution is `panelary`, and the import is `panelary`. The former names
-  `polars_features` / `PanelKit` were retired in the 0.4.0 rename and must not
-  reappear anywhere — code, docs, tests, config or commit messages. If you find
-  one, it is a leftover; fix it.
-- Import convention used in the codebase and docs: `import panelary as pn`.
-- Requires Python **>=3.10**. Mandatory runtime deps are only `numpy` and
-  `polars>=1.0.0`; everything heavier is an optional extra.
+Panelary is the quantitative engine behind **Quantitative & Research Infrastructure** (STRATEGY §7). It is already the most mature asset here — 3,007 tests, four independent leak-safety layers — and the engine does not import it at all yet.
 
-## Setup
+## The rule that keeps this honest
 
-CI uses `uv`; do the same locally.
+> **No new public surface without a named caller in the engine, and a test in the engine
+> that exercises it.**
 
-```bash
-uv venv
-uv pip install -e ".[dev,recommended]"
-```
+A beautiful SDK nobody calls is the failure mode. If the engine does not need it yet, it is
+not the next thing to build. This is also what makes an eventual spin-off credible: the
+interface arrives documented, tested, and exercised by a caller that notices when it breaks.
 
-`dev` brings ruff, mypy, pytest (with `pytest-xdist` and `pytest-benchmark`),
-hypothesis, pre-commit. `recommended` restores the batteries-included
-dependency set (`ml`, `scipy`, `seasonality`, `cafe`). `all` installs every
-real feature extra. There are 21 extras in total: `ml`, `scipy`, `progress`,
-`seasonality`, `forecasting`, `automl`, `lightgbm`, `catboost`, `xgboost`,
-`ann`, `fast`, `llm`, `gpu`, `viz`, `cafe`, `dimreduce`, `explain`, plus the
-bundles `recommended` and `all` and the toolchains `docs` and `dev`. Extra
-names mirror `panelary._internal._deps._MODULE_TO_EXTRA`, so every `require(...)` install
-hint resolves to a real extra — keep the two in step when you add one.
+## Why AgenticFinance is a good first customer
 
-`uv.lock` is **git-ignored on purpose**: this is a library, so resolution stays
-unpinned. Do not check one in.
+It is demanding in exactly the ways that make software good: point-in-time correctness,
+provenance on every value, deterministic re-runs, sealed ground truth, and disclosed
+affiliation. An interface built to satisfy that is stronger than one built to a guess about
+what the market wants.
 
-## Build, lint, type-check, test
+## What to build first
 
-Run all of these before proposing any change. `make check` runs the three gates
-in sequence; the `Makefile` also wraps them individually.
+**`CompileResult.to_json()` so a leakage finding can become report evidence; pipeline-level `audit()` so a whole feature set sweeps in one call; an as-of join and calendar-aware embargo (both are claimed by STRATEGY §7 and do not exist — there is no bitemporal concept anywhere in the package).**
 
-```bash
-make check       # lint + typecheck + test — every gate a change must pass
-make lint        # ruff check . && ruff format --check .   (~0.1s)
-make typecheck   # mypy panelary (config in pyproject.toml)
-make test        # pytest -n auto --dist loadfile, skipping tests/test_forecasting.py
-```
+Consumed by: `truepoint/quant/` — leakage findings become `Evidence(kind=STATIC_ANALYSIS)` in an assessment report
+Caller: `truepoint/src/truepoint/quant/`
 
-Equivalently, without make:
+## Non-negotiables
 
-```bash
-ruff check . && ruff format --check .
-mypy panelary                      # `mypy` alone works too: files = ["panelary"]
-pytest -q -m "not slow"            # ~2100 of ~2130 tests
-```
+- Never funnel. Where this project's capability appears in an assessment recommendation, it
+  is disclosed as affiliated and sits alongside alternatives we do not sell (STRATEGY §3).
+- Never expose sealed ground-truth questions, seeds or answer keys (STRATEGY §21).
+- The customer never needs to know this project's name to buy an assessment (STRATEGY §28).
 
-**`make typecheck` is expected to exit 1 today.** mypy reports ~1030 errors over
-the package; CI does not require zero. The gate
-(`.github/workflows/ci.yml`, job "Type-check (mypy)") is a **ratchet**: it fails
-only if the error count exceeds `MYPY_BASELINE` (currently `1040`), and prints a
-notice asking you to lower the baseline when the count drops. So the rule for a
-change is *do not increase the count*, not *make mypy clean* — and `make check`
-will stop at `typecheck` until the baseline is reached, which is why the three
-gates are usually run individually.
-
-Timing notes for iterating efficiently:
-
-- `ruff check` is effectively instant. Always run it.
-- Collection alone is ~2s (~2130 tests). Serial, **the full suite takes well over
-  15 minutes locally**; `pytest-xdist` ships in the `dev` extra, and
-  `-n auto --dist loadfile` brings that down to roughly a minute on 8 cores.
-  Use `--dist loadfile`, not `loadscope`: several modules build a shared panel
-  fixture per file.
-- **Run the narrowest file first**: e.g. `pytest tests/test_factor.py -q`
-  (~1s of test time). Only run the full suite before finishing.
-
-`make venv` creates `./.venv`; the Makefile then prefers `uv pip` when `uv` is
-on PATH and a venv is active, falling back to plain pip otherwise. Docs targets
-are `make docs` / `make docs-serve`.
-
-## Tests
-
-- Flat layout: `tests/test_<area>.py`. Follow the existing naming when adding
-  files (e.g. `tests/test_detect_bsadf.py`, `tests/test_econ_ivx.py`).
-- `testpaths = ["tests"]`, `addopts = "-ra --strict-markers --strict-config"`.
-  `--strict-markers` means **an unregistered marker is an error** — register
-  new markers in `[tool.pytest.ini_options] markers` before using one.
-- Registered markers: `slow`, `benchmark`, `multivariate`.
-- Packaging guardrails are ordinary pytest files and run locally:
-  `tests/test_import_hygiene.py`, `tests/test_dependency_drift.py`,
-  `tests/test_wheel_guardrails.py`. If you add a dependency or change
-  packaging, run these.
-
-## The correctness contract (the thing that matters most)
-
-Panelary's value proposition is correctness-by-construction. Every operation
-must respect two contracts (see `docs/leakage.md`, `CONTRIBUTING.md`):
-
-- **`panel_safe`** — within-entity operations stay inside their entity and run
-  in time order: `.over(entity_col)` on a time-sorted panel. One entity's data
-  must never leak into another's.
-- **`leakage_safe`** — cross-sectional ops are per-date (`.over(time_col)`),
-  and anything with a `fit` step is fit **per fold on training data only** —
-  never globally, never on the test fold.
-
-Public transformers subclass `panelary.core.protocol.PanelTransformer`
-and **must set `panel_safe` / `leakage_safe` class attributes**.
-
-Additional hard invariants observed by the newer subpackages (see
-`plans/done/detect-build-contract.md`, which documents them explicitly):
-
-1. **Prefix invariance** — `f(x[:T])[t] == f(x[:T+k])[t]` for all `t <= T`. No
-   quantity may depend on `len(x)`: not window sizes, thresholds, lag orders,
-   nor normalisation constants.
-2. **Determinism** — no unseeded RNG; RNG takes an explicit `seed: int`.
-3. **float64 everywhere** — upcast Float32 Polars columns before accumulating.
-4. `np.linalg.solve(A, b[..., None])[..., 0]` — never `solve(A, b)` (NumPy 2.0
-   mis-solves when `p == batch size`).
-5. **Never `rolling_map`** (measured ~249x penalty). Prefer native rolling
-   expressions; `map_batches` per group is the escape hatch.
-
-When you change anything in this area, state which contract it touches and add
-a test that fails under a deliberately leaky implementation. There are existing
-leakage regression suites to model on: `tests/test_leakage.py`,
-`tests/test_detect_leak_safety.py`, `tests/test_explain_leakage.py`,
-`tests/test_econ_features_leakage.py`, `tests/test_reduce_factor_leakage.py`.
-
-## Conventions
-
-- **Panel keys.** `PanelFrame(df, entity="ticker", time="date")`; accessors are
-  `.entity_col` / `.time_col`. Use those names for parameters and locals — the
-  codebase says `entity` / `time` (constructor kwargs) and `entity_col` /
-  `time_col` (attributes), not `id`/`ts`/`group`.
-- **The golden path.** Each workflow stage has one top-level verb on the `pn`
-  namespace — `pn.impute`, `pn.features`, `pn.select`, `pn.reduce`,
-  `pn.cluster`, `pn.regression`, `pn.causal`, `pn.bubbles` — fronting the
-  subpackage that does the work. New user-facing capability should be reachable
-  from the matching verb, not only from a deep import.
-- **Expression namespaces.** Operators are exposed as
-  `pl.col(...).<namespace>.<name>(...)` in the `panel`, `xs`, `ts` and `factor`
-  namespaces. `.panel` implies `.over(entity)`; `.xs` implies `.over(time)`.
-  Typed stubs live in `panelary/namespaces/*.pyi` and ship in the wheel.
-- **Operator registry.** New operators should register a `FeatureSpec` via
-  `panelary.registry.register_feature` (56 specs registered today:
-  `ts`=42, `xs`=7, `factor`=4, `panel`=3). The spec carries the safety contract
-  *and* provenance/license, and `registry.audit()` enforces permissive
-  licensing. This is the machine-readable catalogue of the library — keep it
-  populated.
-- **Optional dependencies.** Import them **lazily, inside the function that
-  needs them**, and route the import through `panelary._internal._deps.require`:
-
-  ```python
-  from panelary._internal._deps import require
-  sklearn = require("sklearn", feature="mrmr selection")
-  ```
-
-  `require()` turns a missing dep into an actionable
-  `pip install 'panelary[ml]'` message. `_deps.py` must keep its
-  zero-third-party-import property. Do **not** add a top-level
-  `import sklearn` / `import scipy` to any module.
-- **Typing.** The package ships `py.typed`. Annotate all public signatures;
-  current coverage is 97.4% of public parameters and 84.4% of return types, and
-  mypy runs in CI as a ratcheted gate (see above): it must not get worse.
-- **Docstrings.** NumPy style with `Parameters` / `Returns` / `Raises`. 79.9% of
-  public callables have one; new public code should.
-
-## Pre-commit
-
-`.pre-commit-config.yaml` runs `ruff`, `ruff-format`, `check-yaml`,
-`check-toml`, `end-of-file-fixer`, `trailing-whitespace`, `nbstripout`,
-`validate-pyproject`, and `mypy`. Two things will trip you up:
-
-- The **mypy hook is `language: system`** — it invokes whatever `mypy` is on
-  `PATH`. If you installed into a venv that isn't active, the hook fails with
-  "No module named mypy". Activate the venv or install mypy.
-- **commitizen-branch** runs at `pre-push` stage and enforces
-  [Conventional Commits](https://www.conventionalcommits.org/) on branch
-  commits. Use `feat(scope): …`, `fix(scope): …`, `docs: …`, `chore: …`.
-
-## Planning convention
-
-Larger work is specified as a markdown plan in `plans/`, and moves through
-two stages with `git mv`: `plans/todo/` and `plans/done/` (implemented). A
-`todo/` entry may be either a specified build contract or a research direction
-awaiting one — the file's `Stage:` line says which. Do not implement from a
-file that says it still needs a contract. `plans/done/detect-build-contract.md`
-is a good template: hard invariants, a per-file ownership table, and explicit
-dependency limits. If you are handed a plan file, treat it as the spec and only
-touch the files it assigns to you.
-
-## What NOT to do
-
-- Do **not** rename the `panelary` package or its public APIs. The rename from
-  `polars_features` is done; renaming again is a breaking change that needs an
-  explicit decision, not a refactor. Equally, do **not** reintroduce the old
-  `polars_features` / `PanelKit` names.
-- Do **not** add a mandatory dependency. `numpy` + `polars` is the entire
-  required footprint; anything else goes behind an extra and `require()`.
-- Do **not** import optional deps at module top level — it breaks the bare-core
-  install that `tests/test_import_hygiene.py` and the CI extras matrix defend.
-- Do **not** copy code from copyleft (GPL/AGPL) upstreams. Contributions are
-  **clean-room** — e.g. catch22 features are reimplemented from Lubba et al.
-  (2019), not taken from `pycatch22`. Record `source` and `license` on the
-  `FeatureSpec`.
-- Do **not** reintroduce Rust / a compiled extension. 0.4.0 is deliberately
-  pure-Python and `tests/test_wheel_guardrails.py` asserts the wheel is
-  `py3-none-any` with no compiled artifacts.
-- Do **not** use `rolling_map`, unseeded RNG, or any window/threshold that
-  depends on total series length.
-- Do **not** fit a scaler, selector, or estimator on the full sample when it
-  will be evaluated per fold.
+Full context: `../STRATEGY.md` (§30 is the amendment this file implements) and `../CLAUDE.md`.
