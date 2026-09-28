@@ -226,14 +226,7 @@ _NOT_EXERCISABLE: dict[str, str] = {
 #: Failures that are already written up and waiting on an owner's decision. This
 #: does NOT suppress anything -- the test still fails -- it only appends the
 #: pointer to the message so the red is actionable rather than rediscovered.
-_KNOWN_OPEN_DECISIONS: dict[str, str] = {
-    "panel.frac_diff": (
-        "already triaged in plans/todo/fracdiff-warmup-decision.md: "
-        "_ffd.py's `n_null = min(width - 1, n - 1)` caps the warm-up at the "
-        "series length, so a row is a number on a short prefix and null once "
-        "the panel grows past the kernel width. Causal, but len(x)-dependent."
-    ),
-}
+_KNOWN_OPEN_DECISIONS: dict[str, str] = {}
 
 #: Namespaces whose operators are reachable as neither an expression nor a frame
 #: callable, with the reason and where they *are* covered instead. Empty today:
@@ -570,19 +563,7 @@ def test_rowwise_spec_has_no_lookahead(spec: FeatureSpec, panel: PanelFrame) -> 
 #: project's mypy job "had never once passed -- and a permanently-red required
 #: check trains everyone to ignore CI, which is how two unrelated failures went
 #: unnoticed." The same reasoning applies here.
-_KNOWN_PREFIX_DEFECTS: dict[str, str] = {
-    "panel.frac_diff": (
-        "_ffd.py's warm-up is `n_null = min(width - 1, n - 1)`; the `n - 1` term "
-        "is a quantity depending on len(x), which AGENTS.md hard invariant 1 "
-        "forbids. A row is a number on a short prefix and null once the panel "
-        "grows past the kernel width. It is causal, so assert_no_lookahead "
-        "passes it -- only prefix invariance sees it. Fixing it reverses a "
-        "deliberate, separately-tested design decision "
-        "(test_fracdiff_perf.py::test_kernel_longer_than_series_returns_partial"
-        "_not_all_null), so it needs an owner's decision, not a refactor: see "
-        "plans/todo/fracdiff-warmup-decision.md."
-    ),
-}
+_KNOWN_PREFIX_DEFECTS: dict[str, str] = {}
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,9 @@ The tests assert, in order:
   several ``(d, threshold)`` pairs;
 * **(b) correctness** -- a default ``d=0.4`` call on an 800-row-per-entity panel
   returns a majority of non-null values (regression for the old all-null footgun
-  where the ``1e-5`` kernel was longer than the series);
+  where the ``1e-5`` kernel was longer than the series), and a row is null
+  exactly when it lacks a full trailing window -- never a truncated-kernel
+  partial value, which would break prefix invariance (hard invariant 1);
 * **(c) perf** -- a 0.5M-row panel completes far under the old multi-second cost;
 * **(d) causality** -- appending future rows never changes an earlier output.
 """
@@ -123,17 +125,12 @@ def test_default_d04_returns_mostly_nonnull_on_800_rows() -> None:
     assert width < 800
 
 
-def test_kernel_longer_than_series_returns_partial_not_all_null() -> None:
-    """When the kernel is longer than the series, the warm-up is capped so the
-    final (fullest-window) row is a valid partial output rather than all-null."""
-    # Tiny series, deliberately long kernel (width >> n).
-    n = 20
+def _fd_last_rows(n: int, weights: np.ndarray) -> np.ndarray:
+    """frac-diff of the series ``1..n`` for one entity, with explicit weights."""
     df = pl.DataFrame(
         {"entity": ["A"] * n, "time": np.arange(n), "px": np.arange(1.0, n + 1.0)}
     )
-    weights = ffd_weights(0.4, 1e-5)  # width 1458 >> 20
-    assert weights.shape[0] > n
-    out = (
+    return (
         df.with_columns(
             pl.col("px")
             .pipe(frac_diff_expr, weights=weights)
@@ -143,13 +140,96 @@ def test_kernel_longer_than_series_returns_partial_not_all_null() -> None:
         .get_column("fd")
         .to_numpy()
     )
-    # Not all-null: at least the last row is computed.
-    assert np.isfinite(out).any()
-    assert np.isfinite(out[-1])
-    # The final row equals the partial dot product over the available history
-    # (newest ``n`` weights against the whole series).
-    expected_last = float(np.dot(weights[-n:], np.arange(1.0, n + 1.0)))
-    assert out[-1] == pytest.approx(expected_last, abs=1e-9)
+
+
+def test_kernel_longer_than_series_is_all_null() -> None:
+    """When the kernel is longer than the series, every row is null.
+
+    Intent reversed on 2026-09-28 (plans/done/fracdiff-warmup-decision.md,
+    option 1). The warm-up used to be capped at ``n - 1`` so the final row was a
+    truncated-kernel "partial" value; that value became ``null`` once the series
+    grew past the kernel width, i.e. it depended on ``len(x)`` (hard invariant 1).
+    A row is now null exactly when it has no full trailing window.
+    """
+    n = 20
+    weights = ffd_weights(0.4, 1e-5)  # width 1458 >> 20
+    assert weights.shape[0] > n
+    out = _fd_last_rows(n, weights)
+    assert out.shape == (n,)
+    assert np.isnan(out).all(), "a row without a full trailing window must be null"
+
+
+@pytest.mark.parametrize("n", [5, 6, 7, 10])
+def test_warmup_is_width_minus_one_at_every_length(n: int) -> None:
+    """Null count is ``min(width - 1, n)``: a function of the row, not of ``n``.
+
+    Width 6 here; ``n = 5`` (kernel longer than the series), ``n = 6`` (exactly
+    one full window) and longer series must all agree on the rows they share.
+    """
+    weights = ffd_weights(0.5, 1e-4, max_width=6)
+    width = weights.shape[0]
+    assert width == 6  # pin the geometry this test reasons about
+    out = _fd_last_rows(n, weights)
+    assert int(np.isnan(out).sum()) == min(width - 1, n)
+    # Every computed row is the full weight-dot-product, never a partial one.
+    x = np.arange(1.0, n + 1.0)
+    for t in range(width - 1, n):
+        expected = float(np.dot(weights, x[t - width + 1 : t + 1]))
+        assert out[t] == pytest.approx(expected, abs=1e-12)
+    # And the rows shared with the longest series are identical (prefix invariance).
+    longest = _fd_last_rows(10, weights)
+    np.testing.assert_array_equal(out, longest[:n])
+
+
+@pytest.mark.parametrize(
+    ("d", "thr"),
+    [(0.4, DEFAULT_THRESHOLD), (0.4, 1e-3), (0.9, 1e-4), (0.6, 0.02)],
+)
+def test_frac_diff_is_prefix_invariant(d: float, thr: float) -> None:
+    """Hard invariant 1, checked by the library's own instrument.
+
+    Uses ``assert_prefix_invariant`` (truncate the panel, re-run, compare) on a
+    panel whose entities are *shorter than the kernel* at the early cuts -- the
+    exact regime the old ``n - 1`` cap got wrong (``d=0.4`` at the default
+    threshold has width 90 against 120 rows, so the quarter cut has 30 rows).
+    ``assert_no_lookahead`` could never see that defect; the partial value was
+    causal.
+    """
+    from panelary.testing import assert_no_lookahead, assert_prefix_invariant
+
+    df = _make_panel(n_entities=3, n_time=120)
+    op = pl.col("px").panel.frac_diff(d, threshold=thr).over("entity").alias("fd")
+    assert_prefix_invariant(op, df, entity="entity", time="time")
+    assert_no_lookahead(op, df, entity="entity", time="time")
+
+
+def test_prefix_check_would_catch_the_old_n_minus_one_cap() -> None:
+    """The instrument above fails a deliberately leaky (``n - 1``) warm-up.
+
+    Guards the guard: if ``assert_prefix_invariant`` stopped seeing a
+    length-dependent warm-up, the test above would pass vacuously.
+    """
+    from panelary.testing import assert_prefix_invariant
+
+    kernel = ffd_weights(0.4, DEFAULT_THRESHOLD)[::-1].copy()
+    width = kernel.shape[0]
+
+    def _old(s: pl.Series) -> pl.Series:
+        n = s.len()
+        out = np.convolve(s.cast(pl.Float64).to_numpy(), kernel)[:n]
+        res = pl.Series(s.name, out, dtype=pl.Float64)
+        n_null = min(width - 1, n - 1)  # the removed, len(x)-dependent cap
+        return res.scatter(np.arange(n_null), None) if n_null > 0 else res
+
+    df = _make_panel(n_entities=2, n_time=120)
+    leaky = (
+        pl.col("px")
+        .map_batches(_old, return_dtype=pl.Float64)
+        .over("entity")
+        .alias("fd")
+    )
+    with pytest.raises(AssertionError, match="PREFIX-INVARIANCE"):
+        assert_prefix_invariant(leaky, df, entity="entity", time="time")
 
 
 # --------------------------------------------------------------------------- #

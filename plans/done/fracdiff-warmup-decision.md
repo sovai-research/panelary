@@ -1,5 +1,24 @@
 # `frac_diff` warm-up: a hard invariant vs. a tested design decision
 
+> **Status (2026-09-28): implemented — option 1.** `panelary/_internal/_ffd.py`
+> now nulls row `t` iff `t < width - 1` (`n_null = min(width - 1, n)`), so a
+> kernel longer than the series yields an all-null column; the "Warm-up / null
+> policy" docstring says so and why. Tests: `tests/test_fracdiff_perf.py`
+> replaces `test_kernel_longer_than_series_returns_partial_not_all_null` with
+> `test_kernel_longer_than_series_is_all_null`,
+> `test_warmup_is_width_minus_one_at_every_length`,
+> `test_frac_diff_is_prefix_invariant` (`assert_prefix_invariant` +
+> `assert_no_lookahead`, cuts shorter than the kernel) and a guard test proving
+> the instrument fails the old `n - 1` cap. `panel.frac_diff` is removed from
+> `_KNOWN_OPEN_DECISIONS` and `_KNOWN_PREFIX_DEFECTS` in
+> `tests/test_registry_conformance.py`; that suite passes with no xfail. Every
+> other `_ffd` caller (`transform.FracDiff`, `.ts.frac_diff`,
+> `preprocessing.fractional_diff`, `econ.features` long-memory) stays green —
+> none depended on the partial row. Behaviour change for users: a series
+> shorter than the kernel now returns all-null instead of one partial value;
+> pass a larger `threshold` or `max_width`. Option 2 (`partial=True` opt-in) was
+> not built: no caller was found for the partial output.
+
 **Stage:** todo — needs an owner's decision, not a refactor · **Found:** 2026-09-12
 
 Two things this project wants are in direct conflict in one line of

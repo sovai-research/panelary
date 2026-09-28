@@ -186,15 +186,23 @@ def frac_diff_expr(
 
     Warm-up / null policy
     ---------------------
-    The first ``min(width - 1, n - 1)`` rows of each group are emitted as
-    ``null`` (an incomplete trailing window). When the kernel fits inside the
-    series (``width - 1 < n`` -- the normal case and every case where the old
-    ``sum_horizontal`` path produced a valid non-null value) this is exactly
-    ``width - 1`` leading nulls and the non-null values are bit-for-bit the same
-    dot products as before. When the kernel is *longer* than the series
-    (``width - 1 >= n``) the old path nulled **every** row; this path instead
-    caps the warm-up at ``n - 1`` so at least the final, fullest-window row is a
-    correctly-computed partial output rather than returning all-null.
+    Row ``t`` (0-based, within the group) is ``null`` exactly when
+    ``t < width - 1``, i.e. when it has no full trailing window. The rule
+    depends only on the row's own position and the kernel width -- never on
+    the series length -- so the leading ``min(width - 1, n)`` rows are null.
+    When the kernel fits inside the series (``width - 1 < n``, the normal case)
+    that is ``width - 1`` leading nulls and every non-null value is the full
+    weight-dot-product. When the kernel is *longer* than the series
+    (``width - 1 >= n``) **every** row is null.
+
+    This is hard invariant 1 (prefix invariance): ``f(x[:T])[t] ==
+    f(x[:T+k])[t]``. An earlier revision capped the warm-up at ``n - 1`` so
+    that the final row of a too-short series was a truncated-kernel "partial"
+    value; that value was causal but changed to ``null`` once the series grew
+    past the kernel width, so it depended on ``len(x)``. It was removed on
+    2026-09-28 (``plans/done/fracdiff-warmup-decision.md``, option 1). If you
+    need output on a short series, pass a larger ``threshold`` or an explicit
+    ``max_width`` so the kernel fits.
 
     Interior ``null`` inputs are treated as ``0`` inside the convolution,
     matching the historical ``sum_horizontal`` zero-fill behaviour.
@@ -222,7 +230,10 @@ def frac_diff_expr(
         )
         out = np.convolve(values, kernel)[:n]
         result = pl.Series(s.name, out, dtype=pl.Float64)
-        n_null = min(width - 1, n - 1)
+        # Prefix-invariant warm-up: a row is null iff it lacks a full trailing
+        # window (t < width - 1). Capping at ``n`` -- not ``n - 1`` -- keeps the
+        # rule independent of len(x); see "Warm-up / null policy" above.
+        n_null = min(width - 1, n)
         if n_null > 0:
             # Emit real Polars nulls (NOT float NaN) for the incomplete warm-up,
             # matching the old ``when/then/otherwise(None)`` mask -- Polars treats
