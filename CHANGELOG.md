@@ -306,6 +306,24 @@ recall, transfer) are not yet measured.
   design has a positive rank IC; on a planted peer-relative signal it matches handcrafted
   features. See `docs/benchmarks/cross-rocket.md`.
 
+### Added — `depend`: nonlinear dependence with a p-value you can trust
+
+Chatterjee's ξ (directional), Hoeffding's D, bias-corrected distance correlation
+(exact `O(n^1.5)` univariate path), Gaussian-copula and KSG mutual information,
+RFF-HSIC, GCM / CODEC / FOCI, transfer entropy and tail dependence — pure NumPy +
+Polars, clean-room from the papers. The coefficient is the easy half; the null is the
+product. On two *independent* AR(0.95) series the i.i.d. ξ null rejects 55% of the
+time at nominal 5% (asserted in `tests/test_depend_calibration.py`). `null="auto"`
+applies a tested policy instead: persistent series get a block null sized for
+dependence tests (`pair_block_length`; the Politis–White length measured 8.2%), panels
+a `common-time` null that permutes whole dates jointly (per-entity shuffles measured
+55–86% type-I under common factors; common-time 6.7%). Plus `feature_screen` and the
+leak-safe `ScreenSelector`, Romano–Wolf lag scans, batched dependence matrices,
+`devol=` reported side by side with the raw number, and `.ts.rolling_xi` /
+`rolling_dcor` / `rolling_tail_dep` / `rolling_gcmi` as prefix-invariant features.
+Zero new dependencies. Not yet built: `tau_star`, `hsic_lasso`, `rcit`, and the
+`select.mrmr` upgrade.
+
 ### Added — `synth`: seeded synthetic panels with planted ground truth
 
 The prior half of the PanelPFN plan, and the fixture the leakage suites hand-roll.

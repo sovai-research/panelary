@@ -66,6 +66,7 @@ nav:
     - Imputation (CAFE): user-guide/imputation.md
     - Labeling: user-guide/labeling.md
     - Feature Selection: user-guide/selection.md
+    - Nonlinear Dependence: user-guide/dependence.md
     - Panel ML Models: user-guide/models.md
     - Feature Attribution: user-guide/attribution.md
     - Latent Factors: user-guide/factors.md
@@ -119,6 +120,7 @@ nav:
     - validation: api-reference/validation.md
     - econ: api-reference/econ.md
     - detect: api-reference/detect.md
+    - depend: api-reference/depend.md
     - econ.features: api-reference/econ-features.md
     - leakage (causalize): api-reference/leakage.md
     - leak verifiers: api-reference/testing.md

@@ -1,5 +1,16 @@
 # `panelary/depend/` — build contract
 
+> **Status (2026-09-28): partially implemented.** M1–M4 are in `panelary/depend/`
+> (+ additive `.ts` ops in `panelary/namespaces/ts.py`), with 16 `tests/test_depend_*.py`
+> files; `test_depend_calibration.py` is green, slow suite included. Not done: the
+> `select.mrmr` / `select.correlation` upgrade (out of scope this round), `tau_star`,
+> `hsic_lasso` and `rcit`. Wired in as `pn.depend` (top-level export, mkdocs nav,
+> conformance entries, CHANGELOG). Measured deviations from this contract
+> (Politis–White block length over-rejects, `min_shift` breaks the rotation null,
+> D=256 is not enough for RFF p-values within 10%, `chebyshev_neighbour_counts`
+> cannot serve KSG, the GARCH claim holds only in direction) are recorded in
+> `docs/user-guide/dependence.md`.
+
 Nonlinear **dependence measurement, screening and inference** for panel data.
 Issued to the implementation agents 2026-09-09.
 

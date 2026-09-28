@@ -200,6 +200,10 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "winsorize": ((0.1,), {}),
     "quantile_bin": ((), {"q": 3}),
     "neutralize": ((AUX,), {}),
+    "rolling_xi": ((AUX,), {"window": 5}),
+    "rolling_dcor": ((AUX,), {"window": 5}),
+    "rolling_tail_dep": ((AUX,), {"window": 10, "q": 0.2}),
+    "rolling_gcmi": ((AUX,), {"window": 6}),
 }
 
 

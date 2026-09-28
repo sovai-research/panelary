@@ -254,6 +254,16 @@ except ImportError as exc:
 else:
     __all__ += ["detect"]
 
+# --- Nonlinear dependence: honest nulls, screening, rolling features --------
+# numpy + polars only (oracles are test-only). Importing it also adds the
+# `.ts.rolling_xi` / `rolling_dcor` / `rolling_tail_dep` / `rolling_gcmi` ops.
+try:
+    from panelary import depend as depend
+except ImportError as exc:
+    _warn_unavailable("panelary.depend", exc)
+else:
+    __all__ += ["depend"]
+
 # --- Point-in-time compiler & borrowed-accuracy metric -----------------------
 # numpy + polars only, so it is eager like `detect` above. The package is
 # `leakage`, not `causal`: `causal` is already one of the eight verbs.
