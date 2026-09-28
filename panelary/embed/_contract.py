@@ -48,7 +48,12 @@ from panelary.shape._axes import InputShape, Plan, ShapeTransform
 from panelary.shape._window import trailing_windows
 
 if TYPE_CHECKING:
-    from typing import Self
+    import sys
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:  # pragma: no cover - typing_extensions ships with every type checker
+        from typing_extensions import Self
 
     from numpy.typing import NDArray
 

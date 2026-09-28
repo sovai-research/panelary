@@ -709,7 +709,7 @@ class CrossRocket(PanelTransformer):
         idx, W = self._fam_cache["peer_dev"]
         if idx.size and P is not None:
             Z = _robust_z(_combine(U, W), clip, mcs)
-            candidate = ~np.isnan(X).any(axis=1)
+            candidate = np.asarray(~np.isnan(X).any(axis=1), dtype=np.bool_)
             wins = self.peer_window_[idx]
             sizes = self.peer_size_[idx]
             for win in np.unique(wins):

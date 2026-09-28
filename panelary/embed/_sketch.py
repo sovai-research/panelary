@@ -230,7 +230,7 @@ class TensorSketch(_EmbedTransform):
             )
         self._enforce_budget(InputShape(rows=frame.height, width=d, entities=0))
         M = matrix_from_columns(frame, cols)
-        valid = np.isfinite(M).all(axis=1)
+        valid = np.asarray(np.isfinite(M).all(axis=1), dtype=np.bool_)
         out = np.full((frame.height, self.n_components), np.nan)
         rows = np.flatnonzero(valid)
         for lo in range(0, rows.size, self.chunk_rows):

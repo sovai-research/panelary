@@ -46,7 +46,12 @@ import polars as pl
 from panelary.embed._contract import matrix_from_columns
 
 if TYPE_CHECKING:
-    from typing import Self
+    import sys
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:  # pragma: no cover - typing_extensions ships with every type checker
+        from typing_extensions import Self
 
     from numpy.typing import NDArray
 
@@ -466,7 +471,7 @@ class PreValidatedRidge:
         """Predict for every row of a polars frame (NaN / None where a feature is missing)."""
         df = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
         X = matrix_from_columns(df, list(features))
-        ok = np.isfinite(X).all(axis=1)
+        ok = np.asarray(np.isfinite(X).all(axis=1), dtype=np.bool_)
         pred = self.predict(np.where(ok[:, None], X, 0.0))
         if self.task == "classification":
             out = pred.astype(object)

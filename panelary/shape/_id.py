@@ -508,7 +508,7 @@ class CUR(ColumnSubset):
         ent, tim = panel.entity_col, panel.time_col
         frame = panel.collect()
         X = self._matrix(frame, self.feature_names_in_)
-        ok = np.isfinite(X).all(axis=1)
+        ok = np.asarray(np.isfinite(X).all(axis=1), dtype=np.bool_)
         X = X[ok]
         self._enforce_budget(InputShape(rows=X.shape[0], width=X.shape[1], entities=0))
         if X.shape[0] == 0:

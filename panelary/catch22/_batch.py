@@ -608,7 +608,7 @@ def _prefix_medians(order_desc: NDArray[np.intp]) -> F64:
     med_hi = np.empty((R, L), dtype=np.int64)
     med_lo[:, L - 1] = lo_rank - 1
     med_hi[:, L - 1] = hi_rank - 1
-    lo = lo_rank
+    lo: NDArray[np.intp] = lo_rank
     delete = order_desc[:, ::-1] + 1  # smallest value first
     for s in range(L - 1):
         c = L - s
@@ -706,7 +706,7 @@ def _welch_cumulative_rows(Y: F64) -> tuple[F64, F64, NDArray[np.bool_]] | None:
         p[:, 1:-1] *= 2
     else:
         p[:, 1:] *= 2
-    w = 2.0 * np.pi * np.fft.rfftfreq(L, 1.0)
+    w = np.asarray(2.0 * np.pi * np.fft.rfftfreq(L, 1.0), dtype=np.float64)
     if w.size < 2:
         return None
     dw = w[1] - w[0]
@@ -757,8 +757,8 @@ def _line_sse_rows(x: F64, Y: F64) -> F64:
 def _best_breakpoint(log_tau: F64, log_f: F64) -> F64:
     """``best_br / ntt`` of the two-segment fit (first minimum, strict ``<``)."""
     ntt = log_tau.size
-    best_err = np.full(log_f.shape[0], np.inf)
-    best_br = np.full(log_f.shape[0], ntt // 2, dtype=np.int64)
+    best_err: F64 = np.full(log_f.shape[0], np.inf)
+    best_br: NDArray[np.int64] = np.full(log_f.shape[0], ntt // 2, dtype=np.int64)
     for br in range(2, ntt - 1):
         err = _line_sse_rows(log_tau[:br], log_f[:, :br]) + _line_sse_rows(
             log_tau[br - 1 :], log_f[:, br - 1 :]

@@ -1017,7 +1017,7 @@ class PanelFrame:
         from panelary.core.asof import asof_join
 
         # `asof_join` re-wraps through `_rewrap`, which preserves the subclass.
-        return asof_join(  # type: ignore[return-value]
+        return asof_join(  # type: ignore[return-value, unused-ignore]
             self,
             vintages,
             event_time=event_time,

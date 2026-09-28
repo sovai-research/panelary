@@ -288,7 +288,7 @@ class CrossSectionalEmbedder(_EmbedTransform):
     def _date_basis(
         self, M: NDArray[np.float64]
     ) -> tuple[NDArray[np.bool_], NDArray[np.float64], NDArray[np.float64]] | None:
-        ok = np.isfinite(M).all(axis=1)
+        ok = np.asarray(np.isfinite(M).all(axis=1), dtype=np.bool_)
         if int(ok.sum()) < self.min_cross_section:
             return None
         Ms = _standardise(M[ok], self.standardize)
@@ -338,7 +338,7 @@ class CrossSectionalEmbedder(_EmbedTransform):
             if self.keep_features
             else base_frame.select(panel.entity_col, panel.time_col)
         )
-        valid = np.isfinite(restored).all(axis=1)
+        valid = np.asarray(np.isfinite(restored).all(axis=1), dtype=np.bool_)
         res = emit_embedding(
             base,
             self.name,

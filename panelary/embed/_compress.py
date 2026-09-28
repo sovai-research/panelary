@@ -303,7 +303,7 @@ class EmbeddingCompressor(_EmbedTransform):
             )
         self._enforce_budget(InputShape(rows=frame.height, width=d, entities=0))
         M = matrix_from_columns(frame, cols)
-        valid = np.isfinite(M).all(axis=1)
+        valid = np.asarray(np.isfinite(M).all(axis=1), dtype=np.bool_)
         m = self._out_width(d)
         if self.method == "none":
             out = M

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
+from numpy.typing import NDArray
 
 from panelary.synth._config import SynthConfig
 from panelary.synth._truth import GroundTruth
@@ -210,7 +211,7 @@ def generate_panel(
     # ---- static parameters ------------------------------------------- #
     centres = _stream(seed, _PARAM_CLUSTER_CENTRES, 0).standard_normal((G, K))
     centres /= math.sqrt(max(K, 1))
-    regime_means = np.zeros((R, K))
+    regime_means: NDArray[np.float64] = np.zeros((R, K))
     if R > 1:
         regime_means = (
             _stream(seed, _PARAM_REGIME_MEANS, 0).standard_normal((R, K))
@@ -288,9 +289,9 @@ def generate_panel(
     breaks: list[int] = []
 
     s_t = 0
-    h = np.zeros(K)
-    f = np.zeros(K)
-    g = np.zeros(G)
+    h: NDArray[np.float64] = np.zeros(K)
+    f: NDArray[np.float64] = np.zeros(K)
+    g: NDArray[np.float64] = np.zeros(G)
     e = np.zeros(N)
     for t in range(T):
         u_stay, u_move = _stream(seed, _STEP_REGIME, t).random(2)

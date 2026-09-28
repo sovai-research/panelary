@@ -45,8 +45,13 @@ from panelary.core.panel_frame import PanelFrame
 from panelary.core.protocol import PanelTransformer
 
 if TYPE_CHECKING:
+    import sys
     from collections.abc import Sequence
-    from typing import Self
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:  # pragma: no cover - typing_extensions ships with every type checker
+        from typing_extensions import Self
 
     from numpy.typing import NDArray
 
