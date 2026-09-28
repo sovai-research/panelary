@@ -31,6 +31,32 @@ time order within the window they are evaluated over*. That is precisely why
 silently redefine the order. Repair it (inject ``Context.time``) and the
 assumption holds again.
 
+Two things a node cannot see about itself
+-----------------------------------------
+
+A rule is handed one node and decides on its merits. Two decisions are not
+properties of the node at all, so the walker puts them on the context first
+(see :class:`ScopedContext`):
+
+**Scope.** A whole-column ``rank()`` is a look-ahead; the same ``rank()``
+inside ``.over(<time>)`` is the canonical cross-sectional feature, because
+every row of the partition shares one timestamp and so no row in it is in any
+other's future. :func:`child_context` marks the subtree under such an ``Over``
+and :data:`CROSS_SECTIONAL_SAFE_KINDS` says which kinds that clears.
+
+**Trust.** ``map_batches`` / ``map_elements`` serialise to an
+``AnonymousFunction`` whose ``function`` slot is a *cloudpickle blob*: there is
+no stable name, no ``fmt_str``, nothing in the tree that says which operator it
+is. Panelary's own per-group operators are built on it (AGENTS.md invariant 5),
+so an unconditional refusal refuses the library's own features -- but nothing
+can be recovered from the node, and matching on text found inside a pickle
+would be an unauthenticated, forgeable claim. So the identification is the
+*caller's*: ``audit(..., trust=("panel.frac_diff",))`` declares it, and
+:func:`resolve_trust` will only accept a name the registry holds with
+``leakage_safe=True`` **and** ``safe_scope="rowwise"``. Both locks must turn;
+neither is inferred from the tree. See :func:`resolve_trust` for what that does
+and does not prove.
+
 Calling convention
 ------------------
 
@@ -75,7 +101,8 @@ from __future__ import annotations
 import copy
 import functools
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, replace
 from typing import Any
 
 import polars as pl
@@ -84,20 +111,35 @@ from panelary.leakage._types import Classification, Context, Rule, node_kind
 
 __all__ = [
     "CROSS_SECTIONAL_SAFE_KINDS",
+    "OPAQUE_KINDS",
     "RULES",
+    "ScopedContext",
+    "build_context",
+    "child_context",
     "child_nodes",
     "classify_node",
+    "in_cross_section",
     "payload_of",
+    "resolve_trust",
     "rewrite_node",
     "rule_for",
+    "trusted_names",
 ]
 
 #: Kinds that leak over a whole column but are perfectly causal when evaluated
 #: inside ``.over(Context.time)`` -- a cross-sectional statistic uses only rows
-#: sharing the same timestamp. A node cannot see its parent, so these are
-#: classified on their own (leaky) merits; a walker that tracks the enclosing
-#: ``Over`` may consult this set to avoid refusing a legitimate cross-sectional
-#: feature such as ``pl.col("x").rank().over("date")``.
+#: sharing the same timestamp. A node cannot see its parent, so these classify
+#: on their own (leaky) merits by default; :func:`child_context` marks the
+#: subtree of a time-partitioned ``Over`` and :func:`_cross_sectionally_safe`
+#: clears exactly these kinds inside it, so a legitimate cross-sectional feature
+#: such as ``pl.col("x").rank().over("date")`` is no longer a false positive.
+#:
+#: The set is deliberately narrow: every member is an *order-invariant* summary
+#: of the partition, so its value cannot depend on where a row sits inside the
+#: date. Kinds that are order-sensitive (``Agg.Last``, the cumulative family)
+#: stay out, even though a single-timestamp partition also makes them causal --
+#: their value would depend on the frame's row order, which is not something to
+#: bless silently.
 CROSS_SECTIONAL_SAFE_KINDS: frozenset[str] = frozenset(
     {
         "Agg.Max",
@@ -112,6 +154,255 @@ CROSS_SECTIONAL_SAFE_KINDS: frozenset[str] = frozenset(
         "Function.Rank",
     }
 )
+
+#: Kinds the serialised tree cannot identify. ``map_batches`` / ``map_elements``
+#: carry their callable as a cloudpickle blob, so two of these nodes are
+#: indistinguishable to the compiler no matter what they compute. They are
+#: refused unless the caller declares trust; see :func:`resolve_trust`.
+OPAQUE_KINDS: frozenset[str] = frozenset({"AnonymousFunction"})
+
+
+# --------------------------------------------------------------------------- #
+# Scope and trust: what the walker knows and a node does not
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ScopedContext(Context):
+    """A :class:`Context` carrying what only the walker can establish.
+
+    Both extra fields are **positional facts about the walk**, not properties
+    of any node, which is why they cannot live in a rule's payload:
+
+    Parameters
+    ----------
+    trusted : frozenset[str]
+        Qualified names of registered operators the *caller* has declared it
+        trusts, already checked against the registry by :func:`resolve_trust`.
+        Non-empty means an opaque node (see :data:`OPAQUE_KINDS`) is accepted.
+    cross_sectional : bool
+        ``True`` inside the subtree of an ``.over(...)`` whose partition keys
+        include :attr:`Context.time`, i.e. where every row of the window shares
+        one timestamp.
+
+    Notes
+    -----
+    The rules read both through :func:`trusted_names` and
+    :func:`in_cross_section`, which fall back to "no trust, no cross-section"
+    for a plain :class:`Context`. That fallback is the fail-closed default: a
+    context that does not say a subtree is trusted or cross-sectional is
+    treated as saying it is not.
+    """
+
+    trusted: frozenset[str] = frozenset()
+    cross_sectional: bool = False
+
+
+def trusted_names(ctx: Context) -> frozenset[str]:
+    """Operator names the caller declared trusted; empty for a plain context."""
+    names = getattr(ctx, "trusted", None)
+    return names if isinstance(names, frozenset) else frozenset()
+
+
+def in_cross_section(ctx: Context) -> bool:
+    """True inside a window partitioned by the time column."""
+    return getattr(ctx, "cross_sectional", False) is True
+
+
+def _trust_index(reg: Any) -> dict[str, Any]:
+    """Map both ``name`` and ``namespace.name`` to each registered spec."""
+    index: dict[str, Any] = {}
+    for spec in reg:
+        index[spec.name] = spec
+        index[spec.qualified_name] = spec
+    return index
+
+
+def resolve_trust(
+    names: str | Iterable[str] | None, *, target: Any = None
+) -> frozenset[str]:
+    """Check declared trust against the registry, returning qualified names.
+
+    Hard invariant 4 of the build contract makes the registry the type system
+    for Panelary's own operators: a registered :class:`~panelary.registry.FeatureSpec`
+    carries the safety contract, so a registered op can be a *trusted leaf* and
+    the compiler need not refuse the library's own ``map_batches``-based
+    features. This is the function that enforces it.
+
+    Two conditions, both required:
+
+    * the name is registered, and its ``leakage_safe`` is ``True``;
+    * its ``safe_scope`` is ``"rowwise"``.
+
+    The second is not redundant. ``leakage_safe`` alone answers a question that
+    has no single answer -- *safe evaluated how?* A ``"window"`` operator is
+    causal as a summary of an already-delimited window and a look-ahead the
+    moment it is broadcast per row, which is exactly how it appears inside an
+    expression. ``factor.forward_return`` is registered ``leakage_safe=True``
+    for that reason and must never be a trusted leaf. ``"unspecified"`` means
+    nobody has classified it, which is not a claim, so it is refused too.
+
+    What this proves, and what it does not
+    --------------------------------------
+    It proves the *named operator* is one Panelary vouches for row by row. It
+    does **not** prove the opaque node in the tree is that operator: nothing
+    can, because the node carries only a cloudpickle blob. Trust is therefore a
+    property of the audit *call*, asserted by the caller, and it clears every
+    opaque node in that one expression. The compiler records the fact in a
+    :class:`~panelary.leakage._types.Finding` rather than passing silently.
+
+    Parameters
+    ----------
+    names : str or iterable of str, optional
+        Operator names, bare (``"frac_diff"``) or qualified
+        (``"panel.frac_diff"``). ``None`` or empty means no trust.
+    target : FeatureRegistry, optional
+        Registry to resolve against; defaults to the process-wide singleton.
+
+    Returns
+    -------
+    frozenset[str]
+        The qualified names, once every one has passed both checks.
+
+    Raises
+    ------
+    TypeError
+        If ``names`` is not a string or an iterable of strings.
+    ValueError
+        If a name is unregistered, is not ``leakage_safe``, or is not
+        ``safe_scope="rowwise"``. Refusing loudly at the boundary beats
+        refusing quietly at the node: the caller asked for trust and is told
+        precisely why it was not granted.
+    """
+    if names is None:
+        return frozenset()
+    wanted = (names,) if isinstance(names, str) else tuple(names)
+    if not wanted:
+        return frozenset()
+
+    if target is None:
+        # Lazy and first-party: `panelary.registry` imports nothing from the
+        # rest of the package, so this cannot cycle, and deferring it to call
+        # time keeps `import panelary.leakage` exactly as cheap as it was.
+        from panelary.registry import registry
+
+        target = registry
+
+    index = _trust_index(target)
+    resolved: set[str] = set()
+    for raw in wanted:
+        if not isinstance(raw, str):
+            raise TypeError(
+                f"trust must name registered operators as strings, got "
+                f"{type(raw).__name__}: {raw!r}"
+            )
+        name = raw.strip()
+        spec = index.get(name)
+        if spec is None:
+            raise ValueError(
+                f"cannot trust {name!r}: no such operator is registered. Trust "
+                "may only name an operator in `panelary.registry` -- that "
+                "registration is what carries the safety contract. Use the "
+                "bare name ('frac_diff') or the qualified one "
+                "('panel.frac_diff')."
+            )
+        if not spec.leakage_safe:
+            raise ValueError(
+                f"cannot trust {spec.qualified_name!r}: it is registered with "
+                "leakage_safe=False, i.e. Panelary itself does not claim it is "
+                "causal. Fix the FeatureSpec if the claim is wrong; do not "
+                "route around it here."
+            )
+        scope = getattr(spec, "safe_scope", "unspecified")
+        if scope != "rowwise":
+            raise ValueError(
+                f"cannot trust {spec.qualified_name!r}: its safe_scope is "
+                f"{scope!r}, not 'rowwise'. leakage_safe=True alone is not "
+                "enough to trust a leaf. A 'window' operator is causal only as "
+                "a summary of an already-delimited window -- broadcast per row, "
+                "which is how it appears inside an expression, it is a "
+                "look-ahead by construction. 'unspecified' means nobody has "
+                "classified it, so it is refused for the same reason an "
+                "unknown node kind is."
+            )
+        resolved.add(spec.qualified_name)
+    return frozenset(resolved)
+
+
+def build_context(
+    *,
+    time: str | None = None,
+    entity: str | None = None,
+    allow_approximate: bool = False,
+    trust: str | Iterable[str] | None = (),
+) -> Context:
+    """The context an audit starts from, with any declared trust resolved.
+
+    Returns a plain :class:`Context` when nothing extra is carried, so the
+    default walk is unchanged in every observable way, and a
+    :class:`ScopedContext` only once there is something to put on it.
+    """
+    resolved = resolve_trust(trust)
+    if not resolved:
+        return Context(time=time, entity=entity, allow_approximate=allow_approximate)
+    return ScopedContext(
+        time=time,
+        entity=entity,
+        allow_approximate=allow_approximate,
+        trusted=resolved,
+    )
+
+
+def _with_cross_section(ctx: Context, flag: bool) -> Context:
+    """``ctx`` with :attr:`ScopedContext.cross_sectional` set to ``flag``."""
+    if isinstance(ctx, ScopedContext):
+        return (
+            ctx if ctx.cross_sectional is flag else replace(ctx, cross_sectional=flag)
+        )
+    if not flag:
+        return ctx  # a plain Context already means "not in a cross-section"
+    return ScopedContext(
+        time=ctx.time,
+        entity=ctx.entity,
+        allow_approximate=ctx.allow_approximate,
+        cross_sectional=True,
+    )
+
+
+def _partitions_by_time(payload: Any, ctx: Context) -> bool:
+    """True when an ``Over`` payload partitions by :attr:`Context.time`.
+
+    Every row of such a window carries the same timestamp, so no row in it is
+    in any other's future. Extra partition keys only subdivide that set, which
+    is why *containing* the time column is enough: ``.over(["sector", "date"])``
+    is as cross-sectional as ``.over("date")``.
+
+    The key must be a bare column reference equal to ``ctx.time``. A derived
+    key such as ``.over(pl.col("date").dt.year())`` is *coarser* than the date
+    -- its groups span many timestamps -- so it is deliberately not recognised.
+    """
+    if ctx.time is None:
+        return False
+    keys = _get(payload, "partition_by")
+    if not isinstance(keys, list):
+        return False
+    return any(key == {"Column": ctx.time} for key in keys)
+
+
+def child_context(kind: str, slot: Any, payload: Any, ctx: Context) -> Context:
+    """The context in which ``payload``'s ``slot`` child subtree is evaluated.
+
+    The walker consults this before descending, which is what gives a node the
+    one thing it cannot read off itself: what it is nested *inside*. Only
+    ``Over`` changes anything, and only for the expression it windows --
+    ``partition_by`` holds grouping keys, not values the feature is built from.
+
+    The flag is always **set**, never merely propagated, so scope cannot leak
+    outward through a nested window: in ``rank().over(entity).over(time)`` the
+    inner ``.over(entity)`` resets it and the rank is refused, which is right,
+    because that window spans every date of one entity.
+    """
+    if kind != "Over" or slot != "function":
+        return ctx
+    return _with_cross_section(ctx, _partitions_by_time(payload, ctx))
 
 
 # --------------------------------------------------------------------------- #
@@ -810,6 +1101,14 @@ _AGGREGATES: list[Rule] = [
 def _classify_over(payload: Any, ctx: Context) -> Classification:
     if _get(payload, "order_by") is not None:
         return Classification.SAFE
+    if _partitions_by_time(payload, ctx):
+        # Invariant 5 is about order: an unordered window is only correct if
+        # the frame happens to be sorted. Partitioned by time, that worry is
+        # vacuous -- every row of the window carries the same timestamp, so no
+        # row order within it can expose a later one. Injecting
+        # `order_by=<time>` here would sort by a column that is constant inside
+        # the partition, i.e. report a repair that changes nothing.
+        return Classification.SAFE
     if ctx.time is None:
         return Classification.REFUSE
     return Classification.REWRITE
@@ -844,16 +1143,42 @@ _OVER_RULE = Rule(
 # --------------------------------------------------------------------------- #
 # Refusals
 # --------------------------------------------------------------------------- #
-_REFUSALS: list[Rule] = [
-    _refuse(
-        "AnonymousFunction",
+def _classify_anonymous(_payload: Any, ctx: Context) -> Classification:
+    """SAFE only when the caller has declared trust; REFUSE otherwise.
+
+    There is nothing in the payload to decide on. ``function`` is a cloudpickle
+    blob -- no name, no ``fmt_str``, and the only text inside it is the pickled
+    ``__qualname__`` and source path of whatever Python object was handed to
+    ``map_batches``. Matching on that would be fail-open twice over: it is
+    forgeable (any lambda can live in a scope called ``frac_diff``) and it is
+    unstable (the bytes change with the closure's captured values, the Python
+    version and the cloudpickle version). So this rule reads the *context*,
+    where an explicit, registry-checked declaration from the caller is the only
+    thing that can put trust.
+    """
+    return Classification.SAFE if trusted_names(ctx) else Classification.REFUSE
+
+
+_ANONYMOUS_RULE = Rule(
+    kind="AnonymousFunction",
+    classify=_classify_anonymous,
+    reason=(
         "`map_batches` / `map_elements` run arbitrary Python over the whole "
-        "column; the compiler cannot see inside, so it cannot prove the output "
-        "at t ignores rows after t. Register the operation as a Panelary "
-        "`FeatureSpec` (which carries its own panel_safe / leakage_safe "
-        "contract) or express it with native, trailing Polars operators.",
-        _FN,
+        "column, and the serialised tree keeps the callable as an opaque "
+        "pickle -- no name, nothing that says which operator it is -- so the "
+        "compiler cannot prove the output at t ignores rows after t, and "
+        "cannot recognise the operator either. Express it with native, "
+        "trailing Polars operators; or, if it is a Panelary operator "
+        "registered with leakage_safe=True and safe_scope='rowwise', name it "
+        "in `audit(..., trust=(...))` to vouch for it explicitly. Trust is "
+        "never inferred from the node."
     ),
+    children=_FN,
+)
+
+
+_REFUSALS: list[Rule] = [
+    _ANONYMOUS_RULE,
     _refuse(
         "Function.Interpolate",
         "interpolation fills a gap by drawing a line between the observation "
@@ -924,6 +1249,38 @@ _REFUSALS: list[Rule] = [
 # --------------------------------------------------------------------------- #
 # The table
 # --------------------------------------------------------------------------- #
+def _cross_sectionally_safe(rule: Rule) -> Rule:
+    """Clear ``rule`` inside a time-partitioned window, if it is clearable.
+
+    Applied to exactly :data:`CROSS_SECTIONAL_SAFE_KINDS`, and only when
+    :func:`child_context` has marked the subtree, so a rule's own verdict is
+    unchanged everywhere else -- a bare ``rank()`` is still refused, and
+    ``rank().over(entity)`` still is too.
+
+    The operand still has to be audited. Most of these kinds declare
+    ``children``, so the walker has already audited theirs by the time this
+    runs. ``Agg.Min`` / ``Agg.Max`` declare none and vouch for their own
+    operand in ``classify`` (see the module docstring), so for those the
+    original classification is still consulted: a REWRITE from it means "the
+    operand is causal", which inside a cross-section needs no rewrite, and a
+    REFUSE means the operand could not be vouched for and stays refused.
+    """
+    if rule.kind not in CROSS_SECTIONAL_SAFE_KINDS:
+        return rule
+    inner = rule.classify
+    audits_its_own_operand = not rule.children
+
+    def classify(payload: Any, ctx: Context) -> Classification:
+        if not in_cross_section(ctx):
+            return inner(payload, ctx)
+        if not audits_its_own_operand:
+            return Classification.SAFE
+        verdict = inner(payload, ctx)
+        return Classification.SAFE if verdict is Classification.REWRITE else verdict
+
+    return replace(rule, classify=classify)
+
+
 def _table(*groups: list[Rule] | Rule) -> dict[str, Rule]:
     table: dict[str, Rule] = {}
     for group in groups:
@@ -931,7 +1288,7 @@ def _table(*groups: list[Rule] | Rule) -> dict[str, Rule]:
         for rule in rules:
             if rule.kind in table:  # pragma: no cover - guards authoring slips
                 raise ValueError(f"duplicate rule for {rule.kind!r}")
-            table[rule.kind] = rule
+            table[rule.kind] = _cross_sectionally_safe(rule)
     return table
 
 

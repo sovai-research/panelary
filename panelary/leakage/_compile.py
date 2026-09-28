@@ -20,6 +20,22 @@ the matching :class:`~panelary.leakage._types.Rule` names in ``children`` (so an
 options dict can never be mistaken for a node), and applies rewrites bottom-up
 so that a parent rule classifies a payload whose children are already causal.
 
+Descending is where the walker adds what a rule cannot see from one node: it
+asks ``_rules.child_context`` for the context each child subtree is evaluated
+in, which is how ``rank()`` can be refused on its own and accepted inside
+``.over(<time>)``, where every row of the window shares one timestamp.
+
+Trust
+-----
+``map_batches`` serialises to an ``AnonymousFunction`` holding a cloudpickle
+blob: there is nothing in the tree that identifies which operator it is, so the
+compiler never infers trust from a node. A caller may *declare* it --
+``audit(..., trust=("panel.frac_diff",))`` -- and the name is then checked
+against the registry (``leakage_safe`` **and** ``safe_scope="rowwise"``) before
+any opaque node is cleared. Every node cleared that way is recorded as a
+:class:`~panelary.leakage._types.Finding`, so a trust-based acceptance appears
+in the audit rather than passing in silence.
+
 Fail closed
 -----------
 The serialised format is not a stable Polars API, so every branch on which the
@@ -37,7 +53,7 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import polars as pl
@@ -70,6 +86,41 @@ def _rule_table() -> Mapping[str, Rule]:
     from ._rules import RULES
 
     return RULES
+
+
+def _child_context(kind: str, slot: Any, payload: Any, ctx: Context) -> Context:
+    """The context the subtree in ``payload[slot]`` is evaluated in.
+
+    Scoping is a walker concern -- it is about where a node sits, not what it
+    holds -- but *which* nesting means what is rule-table policy, so the answer
+    comes from ``_rules``. Lazily imported for the same reason as the table:
+    the walker must stay usable against a fixture table, and the import is a
+    ``sys.modules`` lookup after the first call.
+    """
+    from ._rules import child_context
+
+    return child_context(kind, slot, payload, ctx)
+
+
+def _context(
+    *,
+    time: str | None,
+    entity: str | None,
+    allow_approximate: bool,
+    trust: str | Iterable[str] | None,
+) -> Context:
+    """Build the starting context, resolving any declared trust up front.
+
+    Validation belongs here rather than in the rule: a caller who names an
+    operator that is not registered, or whose ``safe_scope`` is not
+    ``"rowwise"``, gets a ``ValueError`` naming the problem instead of a
+    refusal buried in a finding that looks like the default refusal.
+    """
+    from ._rules import build_context
+
+    return build_context(
+        time=time, entity=entity, allow_approximate=allow_approximate, trust=trust
+    )
 
 
 def _format_error(action: str, exc: Exception) -> RuntimeError:
@@ -155,7 +206,10 @@ def _walk_children(
         for key in rule.children:
             if key not in new_map:
                 continue
-            new_map[key] = _walk_slot(new_map[key], rules, ctx, (*path, key), findings)
+            slot_ctx = _child_context(rule.kind, key, payload, ctx)
+            new_map[key] = _walk_slot(
+                new_map[key], rules, slot_ctx, (*path, key), findings
+            )
         return new_map
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
         new_seq = list(payload)
@@ -179,8 +233,9 @@ def _walk_children(
                     findings,
                 )
                 continue
+            slot_ctx = _child_context(rule.kind, key, payload, ctx)
             new_seq[index] = _walk_slot(
-                new_seq[index], rules, ctx, (*path, index), findings
+                new_seq[index], rules, slot_ctx, (*path, index), findings
             )
         return new_seq
     _refuse(
@@ -191,6 +246,45 @@ def _walk_children(
         findings,
     )
     return payload
+
+
+def _record_trusted_leaf(
+    kind: str,
+    ctx: Context,
+    path: tuple[str | int, ...],
+    findings: list[Finding],
+) -> None:
+    """Record that an opaque node was cleared by the caller's declared trust.
+
+    Silence would make an audit a rubber stamp exactly where it matters most:
+    the one node the compiler did not, and could not, verify. There is no
+    fourth :class:`Classification`, so the finding is filed ``SAFE`` -- it
+    leaves ``verdict`` alone and stays out of ``refused`` / ``rewritten``, but
+    it is there in ``findings`` for anyone reading the report.
+    """
+    names = getattr(ctx, "trusted", None)
+    if not names:
+        return  # the ordinary path: no trust declared, so nothing to record
+    from ._rules import OPAQUE_KINDS
+
+    if kind not in OPAQUE_KINDS:
+        return
+    findings.append(
+        Finding(
+            kind=kind,
+            classification=Classification.SAFE,
+            reason=(
+                "accepted on the caller's declared trust in "
+                f"{', '.join(sorted(names))} -- each registered with "
+                "leakage_safe=True and safe_scope='rowwise'. The compiler did "
+                "NOT verify that this node is one of them: a serialised "
+                "map_batches carries only an opaque pickle, so trust applies "
+                "to the whole audited expression, not to this node in "
+                "particular."
+            ),
+            path=path,
+        )
+    )
 
 
 def _walk(
@@ -248,6 +342,7 @@ def _walk(
         return {key: payload}
 
     if classification is Classification.SAFE:
+        _record_trusted_leaf(kind, ctx, path, findings)
         return {key: payload}
 
     if classification is Classification.REFUSE:
@@ -309,6 +404,7 @@ def audit(
     time: str | None = None,
     entity: str | None = None,
     allow_approximate: bool = False,
+    trust: str | Iterable[str] | None = (),
 ) -> CompileResult:
     """Audit one expression for look-ahead, rewriting what can be rewritten.
 
@@ -324,10 +420,24 @@ def audit(
     time, entity : str, optional
         Panel key columns. ``time`` is what lets the compiler repair an
         ``.over(entity)`` that carries no ``order_by``; without it such a node
-        is refused rather than assumed sorted.
+        is refused rather than assumed sorted. ``time`` is also what makes a
+        cross-sectional feature recognisable: inside ``.over(<time>)`` every
+        row of the window shares a timestamp, so ``rank()`` and the other
+        order-invariant statistics there are causal rather than refused.
     allow_approximate : bool, default=False
         Permit rewrites that are causal but not numerically identical to the
         original.
+    trust : str or iterable of str, optional
+        Registered operator names -- bare (``"frac_diff"``) or qualified
+        (``"panel.frac_diff"``) -- that this expression is built from. A
+        ``map_batches`` / ``map_elements`` node serialises to an opaque pickle,
+        so the compiler refuses it by default and **cannot tell one from
+        another**; naming an operator here is the caller declaring which. Each
+        name must be registered with ``leakage_safe=True`` *and*
+        ``safe_scope="rowwise"``, or the call raises. Because the node cannot
+        be identified, trust clears *every* opaque node in this expression, and
+        each is recorded as a ``SAFE`` finding saying so. Declare it only for
+        expressions you built from operators you named.
 
     Returns
     -------
@@ -335,12 +445,17 @@ def audit(
         ``verdict`` is ``REFUSED`` if any finding refuses, else ``REWRITTEN``
         if any rewrote, else ``SAFE``. ``expr`` holds the compiled expression,
         and is ``None`` when refused. Only ``REWRITE`` and ``REFUSE``
-        decisions are recorded; a node the table proves safe is silent.
+        decisions affect the verdict; a node the table proves safe is silent,
+        the one exception being an opaque node cleared by ``trust``.
 
     Raises
     ------
     TypeError
-        If ``expr`` is not a :class:`polars.Expr`.
+        If ``expr`` is not a :class:`polars.Expr`, or ``trust`` does not hold
+        strings.
+    ValueError
+        If a name in ``trust`` is not registered, is registered
+        ``leakage_safe=False``, or does not have ``safe_scope="rowwise"``.
     RuntimeError
         If the serialised-tree round trip itself fails, which means this
         Polars version's format is not one the compiler was tested against.
@@ -355,7 +470,9 @@ def audit(
     if not isinstance(expr, pl.Expr):
         raise TypeError(f"audit() expects a polars.Expr, got {type(expr).__name__}")
 
-    ctx = Context(time=time, entity=entity, allow_approximate=allow_approximate)
+    ctx = _context(
+        time=time, entity=entity, allow_approximate=allow_approximate, trust=trust
+    )
     findings: list[Finding] = []
     tree = _walk(_to_tree(expr), _rule_table(), ctx, (), findings)
     frozen = tuple(findings)
@@ -380,6 +497,7 @@ def causalize(
     time: str | None = None,
     entity: str | None = None,
     allow_approximate: bool = False,
+    trust: str | Iterable[str] | None = (),
 ) -> pl.Expr:
     """Compile one expression to its point-in-time equivalent, or refuse.
 
@@ -393,6 +511,9 @@ def causalize(
         Panel key columns; see :func:`audit`.
     allow_approximate : bool, default=False
         Permit rewrites that are causal but not numerically identical.
+    trust : str or iterable of str, optional
+        Registered operators this expression is built from; see :func:`audit`
+        for what declaring trust does and does not prove.
 
     Returns
     -------
@@ -411,6 +532,12 @@ def causalize(
     >>> from panelary.leakage import causalize
     >>> expr = causalize(pl.col("x").shift(1))
     """
-    result = audit(expr, time=time, entity=entity, allow_approximate=allow_approximate)
+    result = audit(
+        expr,
+        time=time,
+        entity=entity,
+        allow_approximate=allow_approximate,
+        trust=trust,
+    )
     compiled: pl.Expr = result.raise_if_refused()
     return compiled

@@ -97,6 +97,91 @@ it pulls in no optional dependency.
   require `allow_approximate=True`. A rewrite should not silently change
   results.
 
+### Added — safety metadata that names its usage, and the verifier it was missing
+
+The registry held 56 `FeatureSpec`s and every one of them declared
+`leakage_safe=True`. Nothing verified any of them: `assert_no_lookahead` appeared
+28 times across `tests/` and not once over the registry. And for most of the 56
+the claim was not well-formed to begin with, because `leakage_safe` on its own
+answers a question that has no boolean answer — *safe evaluated how?*
+
+- **`FeatureSpec.safe_scope`** names the usage under which `leakage_safe` is
+  claimed: `"rowwise"` | `"window"` | `"unspecified"` (`VALID_SAFE_SCOPES`). All
+  42 `.ts` operators are `series -> scalar`. Fed a completed window — which is
+  what `extract_features` does with them — such an aggregate is exactly causal.
+  Written the way the expression namespace invites it is not:
+
+  ```python
+  pl.col("x").ts.count_above().over("ticker")
+  ```
+
+  `.over` does not window anything. It computes the aggregate over the entire
+  partition and broadcasts that one number back to every row, so the row at `t=0`
+  carries a statistic computed from observations that had not happened yet. On a
+  single entity's series of 24 normal draws, `count_above()` (the percentage at or
+  above `0.0`) reports **58.33** at `t=0` over the first 12 rows and **45.83** at
+  `t=0` over all 24. Nothing about the first 12 rows changed; twelve more arrived
+  after them and the value the model would have read moved 12.5 points.
+
+  Same code, two verdicts, and a boolean cannot express that. `"rowwise"` means
+  safe evaluated at every row, so `.over(...)` is fine; `"window"` means safe only
+  as a summary of an already-delimited window, and broadcasting per-row is a
+  look-ahead *by construction* — provable from the shape, so no test is required
+  and none should be trusted to find it. All 56 specs now declare a scope: `.ts`
+  ×42 `window`; `.xs` ×7 and `.panel` ×3 `rowwise`; `.factor` split two and two
+  (`forward_return` and `portfolio_sort` are `window`). `"unspecified"` stays the
+  field's default so third-party specs keep working.
+
+  **No operator changed and none of them was wrong.** What changed is that
+  "`ts.absolute_energy` is leakage-safe" is no longer a sentence the metadata lets
+  you write with the usage left out.
+
+- **`panelary.testing.assert_prefix_invariant`** — the second verifier, and the
+  one that was missing. `assert_no_lookahead` perturbs future *values*; it leaves
+  the future *row count* untouched. Anything derived from `len(x)` — a window,
+  threshold, lag order, normalisation constant, or a whole-series aggregate
+  broadcast back over the entity — is therefore bit-identical under any
+  perturbation and passes silently. Hard invariant 1 of the build contract
+  (`f(x[:T])[t] == f(x[:T+k])[t]`) has been stated in `AGENTS.md` since the
+  contract was written and had no assertion behind it at all. This one truncates
+  the panel to `time <= cut`, re-runs, and requires the surviving rows to match
+  the full-panel run; several cuts are tested by default, because one prefix
+  length can agree with the full panel by coincidence.
+
+  **Neither assertion subsumes the other.** The `count_above` expression above
+  passes `assert_no_lookahead` and fails `assert_prefix_invariant`: no future
+  *value* reaches row 0 — the statistic is a count, and the offending observations
+  were above the threshold before and after being shifted by a million — while the
+  future *row count* does. Perturbation catches value-dependence, prefix
+  invariance catches length-dependence, and a new operator wants both.
+
+- **`tests/test_registry_conformance.py`** — the declarations are now checked
+  rather than asserted. It parametrises over `registry.all()`, so a newly
+  registered operator is covered the day it lands rather than the day someone
+  remembers it. Every spec must declare a scope; a `"scalar"` `output_shape` may
+  not be `"rowwise"` (proved from metadata, no data involved); every `"rowwise"`
+  spec must survive **both** verifiers; and every `"window"` spec must be
+  demonstrably *not* prefix-invariant when broadcast per row, so the label cannot
+  degrade into a rubber stamp. The provenance/licence check reuses
+  `registry.audit()` rather than reimplementing it.
+
+  The suite is explicit that **a passing `assert_no_lookahead` is never treated as
+  evidence of safety** for a scalar aggregate: on any given probe panel some
+  statistics are simply degenerate and pass vacuously. Failures are evidence;
+  passes are not. The row-safe side of the ledger is carried by the structural
+  rule, which no choice of data can flatter.
+
+  Two limits worth stating. The 56 specs above are the catalogue registered by
+  `import panelary`; importing `panelary.evolve` adds a further 52 in an `evolve`
+  namespace, and the suite covers those too. And the new prefix-invariance check
+  found a real one on its first run: `panel.frac_diff`'s warm-up length is
+  `min(width - 1, n - 1)`, and that `n` is `len(x)`. On a 200-step random walk
+  with `d=0.4`, row 50 is `3.8109289036087635` when computed on the first 51 rows
+  and `null` when computed on all 200 — the same row of the same series, reverting
+  to null because rows arrived after it. That is a deliberate design decision in
+  tension with hard invariant 1, not a typo, so it is written up for an owner in
+  `plans/todo/fracdiff-warmup-decision.md` rather than silently changed here.
+
 ### Fixed
 
 - **`sliding_window_split` trained on future data.** `cross_validation`'s
@@ -110,6 +195,24 @@ it pulls in no optional dependency.
   `panel_safe` contract in a public splitter and was untested: the existing
   leakage suite only exercised the panel-aware variants. The window is now
   clamped at the start of history. Expanding-window slicing is unchanged.
+- **`assert_no_lookahead` reported NaN-vs-NaN as a look-ahead leak.** The
+  numeric comparison was `(base - pert).abs().fill_null(0.0) > tol`. In Polars
+  null and NaN are distinct, `fill_null` does not touch NaN, and NaN orders
+  *above* every float — so `NaN > tol` is `True` and two identical NaNs were
+  reported as a difference. Any transform that legitimately produces NaN was
+  flagged: a causal expanding min-max scaler emits `0/0` at each entity's first
+  observation, and the verifier called it a leak.
+
+  The consequence is worse than a noisy false positive, because the assertion is
+  load-bearing in the *negative* direction too. `tests/test_leakage_rules.py`
+  proves every rewrite rule empirically by requiring the leaky expression to
+  **fail** `assert_no_lookahead` and the rewritten one to pass; a NaN anywhere in
+  the leaky output satisfies the first half for the wrong reason. A rule whose
+  "leaky" form never actually leaked could have been certified on that evidence.
+  The four missing-value cases are now decided explicitly — null-vs-null and
+  NaN-vs-NaN are equal, null-vs-NaN and NaN-vs-number are mismatches — and `tol`
+  applies only where both sides are ordinary numbers. `assert_no_train_test_leak`
+  shares the same comparison and is fixed with it.
 - **`panelary.metrics.multi_objective` was unreachable.** It had its own
   documented API page while `hasattr(pn.metrics, "multi_objective")` was
   `False`. Now re-exported, with `Metrics`, `score_forecast`, `score_backtest`
@@ -138,6 +241,31 @@ it pulls in no optional dependency.
   identical, is now shared via `_walk_forward_cutoffs`.
 
 ### Changed
+
+- **`PanelFrame` now says something about row order instead of assuming it.**
+  `panel_safe` reads "`.over(entity_col)` on a *time-sorted* panel", and the
+  second half was never enforced: `.over(entity)` serialises with
+  `order_by: null` and takes each entity's rows in whatever order they sit in the
+  frame. A shift, a rolling window or an expanding aggregate on a panel that came
+  back from a join, a `group_by` or a multi-row-group parquet read is therefore
+  not an error — it is a plausible wrong number. `is_sorted_per_entity` and
+  `sort_panel` existed, were opt-in, and nothing called them.
+
+  Three additive layers, plus a fix that needs none of them. **Track:**
+  `PanelFrame.sortedness` is an O(1) flag (`"unknown"` / `"time"` / `"panel"` /
+  `"unsorted"`) that `sort_panel` sets, `mark_sorted` promises, and
+  order-preserving operations carry forward. **Verify:** `assert_sorted()` (or
+  `PanelFrame(..., check_sorted=True)`) measures the real order once and caches
+  it — this stays opt-in because measuring materialises and `PanelFrame` is lazy
+  on purpose. **Warn:** the first within-entity operation on a panel of unknown
+  order emits a `PanelOrderWarning` naming the four ways to make it stop. It
+  warns rather than raises because silently reordering a caller's rows, and
+  rejecting frames the library accepted yesterday, are both breaking changes.
+
+  The fourth way is the actual repair and needs no flag: `panel.within_entity(expr)`
+  pins `order_by=time_col` into the window, so the result is correct whatever
+  order the rows are in and nobody's rows move. New code should prefer it to a
+  bare `.over(entity_col)`.
 
 - **Internal layout only — no public import path changes.** The loose private
   top-level modules were folded into a single `panelary/_internal/` package and

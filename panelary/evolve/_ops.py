@@ -1313,6 +1313,16 @@ def _register_ops(specs: Iterable[Op]) -> None:
     instance, a ``cs_zscore``). Every operator is ``panel_safe`` *and*
     ``leakage_safe``: bodies contain no ``.over`` and no forward shift, so the
     compiler is free to apply the partition scope named by ``Op.kind``.
+
+    That same structural property is what makes every one of them
+    ``safe_scope="rowwise"``: each is ``series -> series``, emitting one value
+    per row from data at or before that row. Contrast the ``ts`` vocabulary,
+    which is ``series -> scalar`` and therefore ``"window"`` -- broadcasting a
+    whole-series summary back over an entity is a look-ahead by construction.
+    The cross-sectional ops (``evolve_cs_*``) are rowwise for the same reason
+    the ``xs`` namespace is: a same-date cross-section is data at ``t``, not
+    after it. ``tests/test_registry_conformance.py`` checks these claims rather
+    than taking them on faith.
     """
     for op in specs:
         registry.register(
@@ -1325,6 +1335,7 @@ def _register_ops(specs: Iterable[Op]) -> None:
                 tier="C",
                 panel_safe=True,
                 leakage_safe=True,
+                safe_scope="rowwise",
                 source=op.source,
                 license=_LICENSE,
                 backend_fn=op.build,

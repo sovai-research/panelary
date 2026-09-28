@@ -55,6 +55,7 @@ __all__ = [
     "register_feature",
     "registry",
     "PERMISSIVE_LICENSES",
+    "VALID_SAFE_SCOPES",
     "VALID_TIERS",
 ]
 
@@ -81,6 +82,27 @@ PERMISSIVE_LICENSES: frozenset[str] = frozenset(
 #: The set of tier labels recognised by the registry. Tiers express a rough
 #: stability / maturity ranking (A = battle-tested core, D = experimental).
 VALID_TIERS: frozenset[str] = frozenset({"A", "B", "C", "D"})
+
+#: Scopes under which :attr:`FeatureSpec.leakage_safe` is being claimed.
+#:
+#: ``leakage_safe`` on its own is a boolean answer to a question that has no
+#: boolean answer: *safe evaluated how?* A ``series -> scalar`` aggregate such
+#: as ``ts.absolute_energy`` is perfectly causal as a summary of a completed
+#: window, and a look-ahead the moment it is broadcast back over an entity with
+#: ``.over(entity)`` -- the value at every row then depends on the entity's
+#: whole series, including its future. The same code, two verdicts, so the
+#: claim has to name the usage it is claimed under.
+#:
+#: - ``"rowwise"``  -- safe evaluated at every row: the value at ``t`` uses only
+#:   data at ``<= t``. Expanding and trailing-window operators qualify.
+#: - ``"window"``   -- safe only as a summary of an already-delimited window
+#:   (what :func:`panelary.extract_features` does). Broadcasting the result
+#:   per-row is a look-ahead **by construction**, provable from the shape; no
+#:   test is required and none should be trusted to find it.
+#: - ``"unspecified"`` -- not yet classified. Permitted so third-party specs
+#:   keep working, but Panelary's own registry is held to a stricter standard
+#:   by ``tests/test_registry_conformance.py``.
+VALID_SAFE_SCOPES: frozenset[str] = frozenset({"rowwise", "window", "unspecified"})
 
 
 def _normalize_license(license_: str) -> str:
@@ -122,6 +144,14 @@ class FeatureSpec:
     leakage_safe : bool
         ``True`` if the operator is *causal* — it never uses future information
         to compute a value at time ``t``. This is the core correctness contract.
+    safe_scope : str
+        The usage under which ``leakage_safe`` is claimed; one of
+        :data:`VALID_SAFE_SCOPES`. ``"rowwise"`` means the value at ``t`` uses
+        only data at ``<= t`` when evaluated at every row. ``"window"`` means
+        the claim holds only for a summary of an already-delimited window --
+        broadcasting such an operator per-row is a look-ahead by construction.
+        Defaults to ``"unspecified"`` so existing third-party specs keep
+        working; Panelary's own operators must declare it.
     source : str
         Human-readable provenance, e.g. ``"Panelary"`` for original
         implementations or a citation for re-implemented published methods.
@@ -146,6 +176,7 @@ class FeatureSpec:
     tier: str = "C"
     panel_safe: bool = False
     leakage_safe: bool = False
+    safe_scope: str = "unspecified"
     source: str = ""
     license: str = ""
     backend_fn: Callable[..., Any] | None = None
@@ -159,6 +190,11 @@ class FeatureSpec:
             raise ValueError(
                 f"FeatureSpec(name={self.name!r}).namespace must be a non-empty "
                 f"string, got {self.namespace!r}."
+            )
+        if self.safe_scope not in VALID_SAFE_SCOPES:
+            raise ValueError(
+                f"FeatureSpec(name={self.name!r}).safe_scope must be one of "
+                f"{sorted(VALID_SAFE_SCOPES)}, got {self.safe_scope!r}."
             )
         if self.tier not in VALID_TIERS:
             raise ValueError(
@@ -419,6 +455,7 @@ def register_feature(
     tier: str = "C",
     panel_safe: bool = False,
     leakage_safe: bool = False,
+    safe_scope: str = "unspecified",
     source: str = "",
     license: str = "",
     target: FeatureRegistry | None = None,
@@ -431,8 +468,11 @@ def register_feature(
 
     Parameters
     ----------
-    name, namespace, input_shape, output_shape, tier, panel_safe, leakage_safe, source, license
-        Forwarded to :class:`FeatureSpec`.
+    name, namespace, input_shape, output_shape, tier, panel_safe, leakage_safe, safe_scope, source, license
+        Forwarded to :class:`FeatureSpec`. ``safe_scope`` names the usage under
+        which ``leakage_safe`` is claimed and should be set explicitly — a
+        decorator-registered operator that leaves it at ``"unspecified"`` is
+        rejected by ``tests/test_registry_conformance.py``.
     params : dict[str, type] | dict[str, Any] | None, optional
         Forwarded to :class:`FeatureSpec`; defaults to an empty mapping.
     target : FeatureRegistry | None, optional
@@ -456,6 +496,7 @@ def register_feature(
             tier=tier,
             panel_safe=panel_safe,
             leakage_safe=leakage_safe,
+            safe_scope=safe_scope,
             source=source,
             license=license,
             backend_fn=fn,

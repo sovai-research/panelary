@@ -106,7 +106,21 @@ _TS_SCALAR_AGGS: dict[str, Callable[[pl.Expr], pl.Expr]] = {
 # Register every scalar-aggregation extractor with the process-wide registry so
 # the ``.ts`` catalogue becomes machine-introspectable (previously it was
 # invisible to :class:`~panelary.registry.FeatureRegistry`). These are all
-# pure per-entity aggregations: panel-safe and leakage-safe by construction.
+# pure per-entity aggregations: panel-safe, and leakage-safe *at window scope*.
+#
+# ``safe_scope="window"`` is forced by the shape, not by a test. Every entry
+# here is ``series -> scalar``: it reduces an entity's whole series to one
+# number. As the summary of an already-delimited window — which is exactly what
+# :func:`extract_features` computes, one row per entity — that is perfectly
+# causal. Broadcast back per row with ``pl.col(c).ts.<name>().over(entity)``,
+# the value at *every* ``t`` is a function of the entity's whole series
+# including its future, so it is a look-ahead **by construction**. No test is
+# needed to establish that and none should be trusted to refute it: a
+# perturbation verifier returns a vacuous pass whenever the statistic is
+# degenerate on the sample (measured: all 10 of the 42 that "pass"
+# ``assert_no_lookahead`` are constant across every row of the probe panel), so
+# a green result here means the probe data was uninformative, not that the
+# operator is row-safe.
 for _name, _params in _TS_SCALAR_AGG_SPECS.items():
     registry.register(
         FeatureSpec(
@@ -118,6 +132,7 @@ for _name, _params in _TS_SCALAR_AGG_SPECS.items():
             tier="B",
             panel_safe=True,
             leakage_safe=True,
+            safe_scope="window",
             source="Panelary",
             license="Apache-2.0",
             backend_fn=_TS_SCALAR_AGGS[_name],

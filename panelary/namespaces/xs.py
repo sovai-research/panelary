@@ -870,6 +870,29 @@ def _is_registered(cls: type, name: str) -> bool:
     return hasattr(cls, name)
 
 
+# Every operator in this namespace is ``safe_scope="rowwise"``. Each reads
+# **only its own cross-section** — the rows sharing the row's own date, once
+# composed with the ``.over(time)`` this namespace is defined by. The statistic
+# each one needs is drawn from that same-date group and nothing else: ``rank``
+# takes the rank and the non-null count within the group; ``demean`` /
+# ``cs_zscore`` / ``standardize`` its mean and std; ``winsorize`` and
+# ``quantile_bin`` its quantiles and count; ``neutralize`` regresses on the
+# factor columns of that group alone (``map_batches`` is handed one date's rows
+# at a time). None of them reaches to another date, so the value at ``t`` is a
+# function of data at exactly ``t`` — trivially ``<= t``, and evaluating them at
+# every row is the intended usage.
+#
+# The dependence that *is* there runs across entities, not across time: adding
+# an entity to a date changes that date's ranks and moments. That is the
+# defining behaviour of a cross-sectional operator, it is what ``panel_safe``
+# exists to record, and it is not a look-ahead.
+#
+# The ``.over(time)`` is load-bearing, exactly as ``.over(entity)`` is for the
+# ``panel`` namespace. Evaluated bare, these pool the whole panel: the "cross
+# section" then spans every date at once and each value depends on the entire
+# future (measured — all five nullary ops fail ``assert_no_lookahead`` and
+# breach prefix invariance without it). The scope is claimed for the documented
+# composition, not for a bare call.
 _SPECS: tuple[FeatureSpec, ...] = (
     FeatureSpec(
         name="rank",
@@ -881,6 +904,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=False,  # cross-sectional: deliberately mixes entities
         leakage_safe=True,  # uses only contemporaneous data
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -895,6 +919,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=False,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -907,6 +932,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=False,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -923,6 +949,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -935,6 +962,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -947,6 +975,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -959,6 +988,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),

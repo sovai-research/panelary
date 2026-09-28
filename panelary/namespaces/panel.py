@@ -503,6 +503,13 @@ def _is_registered(cls: type, name: str) -> bool:
 # ``.panel`` API requires an ``over`` entity key (see ``_apply_over``), so a
 # frame op can no longer be silently computed across entity boundaries. The
 # expression form is panel-safe once the user composes ``.over(entity)``.
+#
+# All three are ``safe_scope="rowwise"``: each is a ``series -> series`` filter
+# that emits one value per row from a bounded *trailing* neighbourhood of that
+# row — a fixed-width causal FIR convolution (``frac_diff``) or a trailing
+# rolling window (``zscore``, ``rs_vol``). The value at ``t`` is a function of
+# ``x[t], x[t-1], ...`` only, so evaluating them at every row is the intended
+# and safe usage; there is no window-summary caveat to attach.
 _SPECS: tuple[FeatureSpec, ...] = (
     FeatureSpec(
         name="frac_diff",
@@ -513,6 +520,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -525,6 +533,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="A",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
@@ -537,6 +546,7 @@ _SPECS: tuple[FeatureSpec, ...] = (
         tier="B",
         panel_safe=True,
         leakage_safe=True,
+        safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
     ),
