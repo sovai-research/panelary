@@ -26,20 +26,38 @@ rest of ``validation/`` needs and that did not exist yet:
 All purge/embargo arithmetic is delegated to
 ``core.model_selection._purge_embargo_positions`` so there is exactly one
 implementation of the leakage rule in the library.
+
+``horizon`` and ``embargo`` may be calendar durations (``"5d"``, ``"5bd"``,
+:class:`~panelary.core.model_selection.BusinessDays`, ``datetime.timedelta``)
+here too. Positions alone cannot say how much *time* separates them, so a
+calendar spec needs the sorted unique time values, passed as ``times=``; the
+calendar arithmetic is ``core.model_selection._train_positions``, the same
+dispatcher the panel splitters use. Integer specs never need ``times`` and give
+byte-identical splits.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
+import polars as pl
 
+from panelary.core._calendar import (
+    Duration,
+    as_steps,
+    is_steps,
+    shift_forward,
+    validate_duration,
+)
 from panelary.core.model_selection import (
     CombinatorialPurgedCV,
     CVReport,
     PurgedKFold,
     _purge_embargo_positions,
+    _train_positions,
     cross_validate,
     expanding_window_split,
     sliding_window_split,
@@ -82,6 +100,66 @@ class IndexSplit:
 
 
 # --------------------------------------------------------------------------- #
+# Calendar support for the positional splitters
+# --------------------------------------------------------------------------- #
+def _time_index(
+    times: Any, n_times: int, horizon: object, embargo: object
+) -> pl.Series | None:
+    """Validate ``times`` against ``n_times``; ``None`` when nothing needs it.
+
+    Calendar ``horizon`` / ``embargo`` specs are measured on time values, so
+    they require ``times``: the sorted, strictly increasing, null-free unique
+    time values, one per position.
+    """
+    horizon = validate_duration(horizon, name="horizon")
+    embargo = validate_duration(embargo, name="embargo")
+    calendar = not (is_steps(horizon) and is_steps(embargo))
+    if times is None:
+        if calendar:
+            raise TypeError(
+                "a calendar `horizon`/`embargo` is measured on time values, so "
+                "the positional splitters need `times=`: the sorted unique time "
+                f"values, one per position (length {n_times})."
+            )
+        return None
+    series = times if isinstance(times, pl.Series) else pl.Series("time", times)
+    if series.len() != n_times:
+        raise ValueError(
+            f"`times` has {series.len()} values but `n_times` is {n_times}; pass "
+            "one time value per position of the unique-time index."
+        )
+    if series.null_count():
+        raise ValueError("`times` must not contain nulls.")
+    if not (series.is_sorted() and series.n_unique() == n_times):
+        raise ValueError(
+            "`times` must be strictly increasing (the sorted unique time index)."
+        )
+    dtype = series.dtype
+    if calendar and not (dtype == pl.Date or isinstance(dtype, pl.Datetime)):
+        raise TypeError(
+            f"a calendar `horizon`/`embargo` needs Date or Datetime `times`, got "
+            f"{dtype}; on an integer axis pass them as int numbers of steps."
+        )
+    return series
+
+
+def _calendar_gap(
+    train: np.ndarray, start: int, embargo: Duration, times: pl.Series
+) -> np.ndarray:
+    """Keep train positions ``j`` with ``times[j] + embargo < times[start]``.
+
+    The calendar form of the walk-forward gap ``j < start - embargo``: the
+    embargo separates the *end of training* from the *start of the test
+    block* by more than ``embargo`` of real time, not by ``embargo`` rows.
+    """
+    if not train.size:
+        return train
+    shifted = shift_forward(times.gather(train.tolist()), embargo)
+    keep = (shifted < times[start]).to_numpy()
+    return train[keep]
+
+
+# --------------------------------------------------------------------------- #
 # Positional splitters
 # --------------------------------------------------------------------------- #
 def cpcv_splits(
@@ -89,8 +167,9 @@ def cpcv_splits(
     *,
     n_groups: int = 6,
     n_test_groups: int = 2,
-    horizon: int = 0,
-    embargo: int = 0,
+    horizon: int | Duration = 0,
+    embargo: int | Duration = 0,
+    times: Any = None,
 ) -> list[IndexSplit]:
     """Combinatorial Purged CV splits as integer time positions.
 
@@ -107,10 +186,15 @@ def cpcv_splits(
         Number ``N`` of contiguous time groups.
     n_test_groups : int, default=2
         Number ``k`` of groups per test set (``1 <= k < N``).
-    horizon : int, default=0
-        Label horizon in time steps, used for purging.
-    embargo : int, default=0
-        Embargo in time steps applied after each contiguous test block.
+    horizon : int or duration, default=0
+        Label horizon, used for purging: time steps, or a calendar duration
+        (needs ``times``).
+    embargo : int or duration, default=0
+        Embargo applied after each contiguous test block: time steps, or a
+        calendar duration such as ``"5bd"`` (needs ``times``).
+    times : array-like or polars.Series, optional
+        The sorted unique time values, one per position. Required only for a
+        calendar ``horizon`` / ``embargo``.
 
     Returns
     -------
@@ -129,9 +213,10 @@ def cpcv_splits(
         horizon=horizon,
         embargo=embargo,
     )
+    index = _time_index(times, n_times, horizon, embargo)
     return [
         IndexSplit(f.train_positions, f.test_positions, f.test_groups)
-        for f in cv._iter_folds(n_times)
+        for f in cv._iter_folds(n_times, time_index=index)
     ]
 
 
@@ -140,10 +225,11 @@ def walk_forward_splits(
     *,
     n_splits: int = 5,
     test_size: int | None = None,
-    horizon: int = 0,
-    embargo: int = 0,
+    horizon: int | Duration = 0,
+    embargo: int | Duration = 0,
     expanding: bool = True,
     window_size: int | None = None,
+    times: Any = None,
 ) -> list[IndexSplit]:
     """Purged, embargoed walk-forward splits as integer time positions.
 
@@ -159,15 +245,21 @@ def walk_forward_splits(
         Number of successive test blocks.
     test_size : int, optional
         Size of each test block. Defaults to ``n_times // (n_splits + 1)``.
-    horizon : int, default=0
-        Label horizon used for purging the train/test boundary.
-    embargo : int, default=0
-        Additional embargo positions removed before the test block.
+    horizon : int or duration, default=0
+        Label horizon used for purging the train/test boundary: time steps, or
+        a calendar duration (needs ``times``).
+    embargo : int or duration, default=0
+        Additional embargo removed before the test block: positions, or a
+        calendar duration (needs ``times``) -- training then ends more than
+        ``embargo`` of real time before the test block starts.
     expanding : bool, default=True
         Expanding window (all history) vs a rolling window of ``window_size``.
     window_size : int, optional
         Rolling-window length when ``expanding=False``. Defaults to
         ``test_size * n_splits``.
+    times : array-like or polars.Series, optional
+        The sorted unique time values, one per position. Required only for a
+        calendar ``horizon`` / ``embargo``.
 
     Returns
     -------
@@ -199,18 +291,34 @@ def walk_forward_splits(
             f"history in {n_times} time steps."
         )
 
+    index = _time_index(times, n_times, horizon, embargo)
+    horizon = validate_duration(horizon, name="horizon")
+    embargo = validate_duration(embargo, name="embargo")
+    integer = is_steps(horizon) and is_steps(embargo)
+
     out: list[IndexSplit] = []
     for s in range(n_splits):
         start = first_test + s * test_size
         stop = start + test_size
         test = np.arange(start, stop, dtype=np.int64)
-        allowed = _purge_embargo_positions(n_times, test, horizon, embargo)
+        if integer:
+            allowed = _purge_embargo_positions(
+                n_times, test, as_steps(horizon), as_steps(embargo)
+            )
+        else:
+            allowed = _train_positions(
+                n_times, test, horizon=horizon, embargo=embargo, times=index
+            )
         lo = 0 if expanding else max(0, start - window_size)
         train = allowed[(allowed < start) & (allowed >= lo)]
         # The embargo protects the *forward* side of a test block; for a strictly
         # backward-looking walk-forward fit it is applied as an extra gap.
-        if embargo > 0 and train.size:
-            train = train[train < start - embargo]
+        if is_steps(embargo):
+            if as_steps(embargo) > 0 and train.size:
+                train = train[train < start - as_steps(embargo)]
+        else:
+            assert index is not None
+            train = _calendar_gap(train, start, embargo, index)
         if train.size:
             out.append(IndexSplit(train, test, None))
     return out
@@ -220,8 +328,9 @@ def purged_calibration_split(
     n_times: int,
     *,
     calibration_size: int | float = 0.25,
-    horizon: int = 0,
-    embargo: int = 0,
+    horizon: int | Duration = 0,
+    embargo: int | Duration = 0,
+    times: Any = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Split a time axis into ``(train, calibration)`` with a purged boundary.
 
@@ -237,11 +346,16 @@ def purged_calibration_split(
         Number of unique time steps.
     calibration_size : int | float, default=0.25
         Absolute number of calibration steps, or a fraction of ``n_times``.
-    horizon : int, default=0
+    horizon : int or duration, default=0
         Label horizon; training positions whose labels reach into the
-        calibration block are purged.
-    embargo : int, default=0
-        Extra positions dropped before the calibration block.
+        calibration block are purged. Time steps, or a calendar duration
+        (needs ``times``).
+    embargo : int or duration, default=0
+        Extra positions dropped before the calibration block, or a calendar
+        duration of real time (needs ``times``).
+    times : array-like or polars.Series, optional
+        The sorted unique time values, one per position. Required only for a
+        calendar ``horizon`` / ``embargo``.
 
     Returns
     -------
@@ -272,10 +386,24 @@ def purged_calibration_split(
         )
     start = n_times - n_calib
     calib = np.arange(start, n_times, dtype=np.int64)
-    allowed = _purge_embargo_positions(n_times, calib, horizon, embargo)
+    index = _time_index(times, n_times, horizon, embargo)
+    horizon = validate_duration(horizon, name="horizon")
+    embargo = validate_duration(embargo, name="embargo")
+    if is_steps(horizon) and is_steps(embargo):
+        allowed = _purge_embargo_positions(
+            n_times, calib, as_steps(horizon), as_steps(embargo)
+        )
+    else:
+        allowed = _train_positions(
+            n_times, calib, horizon=horizon, embargo=embargo, times=index
+        )
     train = allowed[allowed < start]
-    if embargo > 0 and train.size:
-        train = train[train < start - embargo]
+    if is_steps(embargo):
+        if as_steps(embargo) > 0 and train.size:
+            train = train[train < start - as_steps(embargo)]
+    else:
+        assert index is not None
+        train = _calendar_gap(train, start, embargo, index)
     if train.size == 0:
         raise ValueError(
             "purging left no training positions; reduce `calibration_size`, "
@@ -323,8 +451,9 @@ def cpcv_backtest_paths(
     *,
     n_groups: int = 6,
     n_test_groups: int = 2,
-    horizon: int = 0,
-    embargo: int = 0,
+    horizon: int | Duration = 0,
+    embargo: int | Duration = 0,
+    times: Any = None,
 ) -> np.ndarray:
     """Run CPCV and stitch the folds into the full set of backtest paths.
 
@@ -342,7 +471,7 @@ def cpcv_backtest_paths(
         ``fit_predict(train_positions, test_positions) -> ndarray`` returning one
         value per test position (typically a per-period strategy return). It is
         called once per split, i.e. ``C(n_groups, n_test_groups)`` times.
-    n_groups, n_test_groups, horizon, embargo
+    n_groups, n_test_groups, horizon, embargo, times
         See :func:`cpcv_splits`.
 
     Returns
@@ -373,7 +502,8 @@ def cpcv_backtest_paths(
         embargo=embargo,
     )
     groups = cv._group_positions(n_times)
-    folds = list(cv._iter_folds(n_times))
+    index = _time_index(times, n_times, horizon, embargo)
+    folds = list(cv._iter_folds(n_times, time_index=index))
 
     # values[split][global position] for the split's test positions.
     per_split: list[dict[int, float]] = []
@@ -406,9 +536,10 @@ def walk_forward_backtest_path(
     *,
     n_splits: int = 5,
     test_size: int | None = None,
-    horizon: int = 0,
-    embargo: int = 0,
+    horizon: int | Duration = 0,
+    embargo: int | Duration = 0,
     expanding: bool = True,
+    times: Any = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run a purged walk-forward backtest, returning its single path.
 
@@ -421,7 +552,7 @@ def walk_forward_backtest_path(
         Number of time steps.
     fit_predict : callable
         ``fit_predict(train_positions, test_positions) -> ndarray``.
-    n_splits, test_size, horizon, embargo, expanding
+    n_splits, test_size, horizon, embargo, expanding, times
         See :func:`walk_forward_splits`.
 
     Returns
@@ -437,6 +568,7 @@ def walk_forward_backtest_path(
         horizon=horizon,
         embargo=embargo,
         expanding=expanding,
+        times=times,
     )
     pos_parts: list[np.ndarray] = []
     val_parts: list[np.ndarray] = []

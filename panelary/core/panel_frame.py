@@ -981,6 +981,54 @@ class PanelFrame:
                 "polars, or call `.sort_panel()` and use `.over(entity_col)`."
             ) from exc
 
+    def asof_join(
+        self,
+        vintages: pl.DataFrame | pl.LazyFrame,
+        *,
+        event_time: str = "event_time",
+        knowledge_time: str = "knowledge_time",
+        vintage_entity: str | None = None,
+        values: str | list[str] | None = None,
+        lag: Any = None,
+        suffix: str = "",
+        provenance: bool = False,
+    ) -> Self:
+        """Attach the vintage values that were *known* at each row's time.
+
+        The point-in-time (bitemporal) join: each row ``(entity, t)`` receives,
+        among the vintages with ``knowledge_time + lag <= t`` and
+        ``event_time <= t``, the newest period as it was known at ``t``.
+        Restatements published after ``t`` are invisible at ``t``. Correct on
+        unsorted input; rows keep their order. See
+        :func:`panelary.core.asof.asof_join` for the full contract.
+
+        Parameters
+        ----------
+        vintages : polars.DataFrame or polars.LazyFrame
+            ``(entity, event_time, knowledge_time, value...)`` rows.
+        event_time, knowledge_time, vintage_entity, values, lag, suffix, provenance
+            As :func:`panelary.core.asof.asof_join`.
+
+        Returns
+        -------
+        PanelFrame
+            This panel plus the attached columns; keys and known row order kept.
+        """
+        from panelary.core.asof import asof_join
+
+        # `asof_join` re-wraps through `_rewrap`, which preserves the subclass.
+        return asof_join(  # type: ignore[return-value]
+            self,
+            vintages,
+            event_time=event_time,
+            knowledge_time=knowledge_time,
+            vintage_entity=vintage_entity,
+            values=values,
+            lag=lag,
+            suffix=suffix,
+            provenance=provenance,
+        )
+
     def group_by_entity(self, **kwargs: Any) -> pl.LazyGroupBy:
         """Return a lazy ``group_by`` over the entity column.
 

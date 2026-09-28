@@ -29,6 +29,7 @@ transform, splitter and verifier agrees on what "the past" means without being t
 | Inspect the panel's axes | `entities`, `n_entities`, `time_index` |
 | Assert one row per `(entity, time)` | `assert_unique_keys` |
 | Lazy frame operations, keys preserved | `select`, `with_columns`, `filter`, `pipe` |
+| Join a vintage table **as it was known** at each row's time | `asof_join` |
 | Drop back to Polars | `collect`, `lazy`, `to_frame`, `to_native` |
 | Single-key accessors | `entity`, `time` |
 
@@ -40,6 +41,42 @@ and would couple Panelary to Polars internals. Wrapping instead keeps one rule: 
 a `PanelFrame` with the keys carried through, and operations that leave the panel world
 (`collect`, `to_native`) hand you plain Polars. `validate=False` exists for the internal case of
 re-wrapping a frame whose keys were already checked.
+
+## Point-in-time joins: `asof_join`
+
+Fundamentals, estimates and macro series arrive as **vintages**: a value is
+*about* an `event_time` (the fiscal period) and became *known* at a
+`knowledge_time` (the filing), and may later be restated. Joining on the period,
+or taking the latest vintage per period, uses figures nobody had on the date
+being simulated. `panelary.core.asof.asof_join(panel, vintages, ...)` — also
+`PanelFrame.asof_join(vintages, ...)` — gives each panel row `(entity, t)` the
+vintage with the latest `event_time`, and for that period the latest
+`knowledge_time`, among those with `knowledge_time + lag <= t` **and**
+`event_time <= t`:
+
+```python
+from panelary.core.asof import asof_join
+
+pit = asof_join(
+    prices,                      # PanelFrame / DataFrame / LazyFrame
+    fundamentals,                # (ticker, event_time, knowledge_time, eps, ...)
+    entity="ticker", time="date",
+    lag="1bd",                   # a filing is usable from the next business day
+    provenance=True,             # also attach which vintage each value came from
+)
+```
+
+The contract: **strictly causal** (the value at `t` depends only on vintages
+eligible by `t`), **prefix-invariant**, **order-independent** (neither frame needs
+sorting; rows come back in the panel's order), and **fail-closed** — null
+vintage keys, conflicting duplicate vintages, and `Date`-vs-`Datetime` clock
+mismatches are errors, not guesses. A restatement is invisible before it was
+published and returned from then on; a restatement of an *older* period never
+displaces a newer period. `lag` takes the same duration vocabulary as the
+calendar embargo (`int` steps on an integer axis; `"1d"`, `timedelta`, `"2bd"`,
+`BusinessDays` on a temporal one). The column roles default to `event_time` /
+`knowledge_time` — the shape of the `vintages` table `panelary.synth`'s
+`generate_panel` emits.
 
 ## Stability
 
@@ -60,3 +97,5 @@ internally, but no formal stability guarantee applies before `1.0.0`.
 ## API
 
 ::: panelary.core.panel_frame
+
+::: panelary.core.asof

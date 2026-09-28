@@ -63,13 +63,15 @@ from ._types import (
     Classification,
     CompileResult,
     Context,
+    FeatureSetAudit,
     Finding,
     Rule,
     Verdict,
     node_kind,
+    render_expr,
 )
 
-__all__ = ["audit", "causalize"]
+__all__ = ["audit", "audit_features", "causalize"]
 
 #: Reported as the ``kind`` of a finding when a slot a rule declared to hold a
 #: child expression holds something that is not an expression node at all.
@@ -477,8 +479,18 @@ def audit(
     tree = _walk(_to_tree(expr), _rule_table(), ctx, (), findings)
     frozen = tuple(findings)
 
+    # ``source`` / ``context`` ride along so the result can be serialised as
+    # report evidence (``CompileResult.to_json``) without the caller having to
+    # remember what was audited, or against which keys.
+    source = render_expr(expr)
     if any(f.classification is Classification.REFUSE for f in frozen):
-        return CompileResult(verdict=Verdict.REFUSED, findings=frozen, expr=None)
+        return CompileResult(
+            verdict=Verdict.REFUSED,
+            findings=frozen,
+            expr=None,
+            source=source,
+            context=ctx,
+        )
 
     verdict = (
         Verdict.REWRITTEN
@@ -488,7 +500,158 @@ def audit(
     # Deserialise even when nothing changed: it costs microseconds and keeps
     # the round trip on the tested path for every call, so format drift shows
     # up as a loud RuntimeError instead of a silently unrewritten expression.
-    return CompileResult(verdict=verdict, findings=frozen, expr=_from_tree(tree))
+    return CompileResult(
+        verdict=verdict,
+        findings=frozen,
+        expr=_from_tree(tree),
+        source=source,
+        context=ctx,
+    )
+
+
+def _named_features(
+    features: Mapping[str, pl.Expr] | Iterable[pl.Expr],
+) -> list[tuple[str, pl.Expr]]:
+    """Normalise a feature set to ``[(name, expr), ...]``, in the given order."""
+    if isinstance(features, pl.Expr):
+        raise TypeError(
+            "audit_features() expects a feature *set* -- a mapping of name to "
+            "polars.Expr, or an iterable of named expressions -- not a single "
+            "expression; use audit() for one expression."
+        )
+    pairs: list[tuple[str, pl.Expr]] = []
+    if isinstance(features, Mapping):
+        for name, expr in features.items():
+            if not isinstance(name, str):
+                raise TypeError(
+                    f"feature names must be str, got {type(name).__name__!r} "
+                    f"({name!r})."
+                )
+            pairs.append((name, expr))
+    else:
+        for i, expr in enumerate(features):
+            if not isinstance(expr, pl.Expr):
+                raise TypeError(
+                    f"audit_features() item {i} is {type(expr).__name__!r}, "
+                    "not a polars.Expr."
+                )
+            try:
+                name = expr.meta.output_name()
+            except Exception as exc:
+                raise ValueError(
+                    f"audit_features() item {i} ({render_expr(expr)}) has no "
+                    "output name to key the report by; pass a mapping "
+                    "{name: expr}, or give it one with .alias(...)."
+                ) from exc
+            pairs.append((name, expr))
+    seen: set[str] = set()
+    for name, expr in pairs:
+        if not isinstance(expr, pl.Expr):
+            raise TypeError(
+                f"feature {name!r} is {type(expr).__name__!r}, not a polars.Expr."
+            )
+        if name in seen:
+            raise ValueError(
+                f"feature name {name!r} appears twice; a report is keyed by "
+                "feature name, so names must be unique."
+            )
+        seen.add(name)
+    return pairs
+
+
+def audit_features(
+    features: Mapping[str, pl.Expr] | Iterable[pl.Expr],
+    *,
+    time: str | None = None,
+    entity: str | None = None,
+    allow_approximate: bool = False,
+    trust: str | Iterable[str] | None = (),
+) -> FeatureSetAudit:
+    """Audit a whole named feature set in one call.
+
+    :func:`audit` answers for one expression; a feature set is dozens. This
+    runs :func:`audit` over every feature with the **same** panel keys, options
+    and declared trust, and aggregates the answers into one
+    :class:`~panelary.leakage.FeatureSetAudit` whose verdict is the worst of
+    its parts and whose :meth:`~panelary.leakage.FeatureSetAudit.to_json` is a
+    single deterministic evidence payload. Like :func:`audit`, it never raises
+    because a feature leaks: it reports every feature, not the first refusal.
+
+    Parameters
+    ----------
+    features : mapping of str to polars.Expr, or iterable of polars.Expr
+        The feature set. A mapping is keyed by feature name. An iterable of
+        expressions is keyed by each expression's output name
+        (``expr.meta.output_name()``), so alias them. Order is preserved in the
+        report.
+    time, entity : str, optional
+        Panel keys, applied to every feature; see :func:`audit`.
+    allow_approximate : bool, default=False
+        Permit causal-but-not-identical rewrites; see :func:`audit`.
+    trust : str or iterable of str, optional
+        Registered operators the feature set is built from; see :func:`audit`.
+        Validated once, and applied to every feature -- and recorded in every
+        result's ``context``, so a trust-based acceptance is visible in the
+        report.
+
+    Returns
+    -------
+    FeatureSetAudit
+        One :class:`CompileResult` per feature, in input order.
+
+    Raises
+    ------
+    TypeError
+        If ``features`` is a single expression, or holds a non-expression or a
+        non-string name.
+    ValueError
+        If two features share a name, an unnamed expression is given in an
+        iterable, or ``trust`` names an operator that cannot be trusted (see
+        :func:`audit`).
+    RuntimeError
+        If the serialised-tree round trip fails (untested Polars format).
+
+    See Also
+    --------
+    audit : The single-expression compiler this sweeps.
+    panelary.core.pipeline.Pipeline.audit : The same sweep over a pipeline's steps.
+
+    Examples
+    --------
+    >>> import polars as pl
+    >>> from panelary.leakage import audit_features
+    >>> report = audit_features(
+    ...     {
+    ...         "lag": pl.col("x").shift(1).over("e", order_by="t"),
+    ...         "lead": pl.col("x").shift(-1).over("e", order_by="t"),
+    ...     },
+    ...     time="t",
+    ...     entity="e",
+    ... )
+    >>> report.verdict.value, report.refused
+    ('refused', ('lead',))
+    >>> report.to_json()[:40]
+    '{"counts":{"refused":1,"rewritten":0,"sa'
+    """
+    pairs = _named_features(features)
+    # Resolve trust once, up front: a bad name is a ValueError before any work,
+    # not a repeated error per feature.
+    _context(time=time, entity=entity, allow_approximate=allow_approximate, trust=trust)
+    return FeatureSetAudit(
+        results=tuple(
+            (
+                name,
+                audit(
+                    expr,
+                    time=time,
+                    entity=entity,
+                    allow_approximate=allow_approximate,
+                    trust=trust,
+                ),
+            )
+            for name, expr in pairs
+        )
+    )
 
 
 def causalize(

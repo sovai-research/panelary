@@ -27,6 +27,9 @@ argument and the honest limits — read
 | --- | --- |
 | Make this expression point-in-time, or tell me you can't | `causalize` |
 | The same, without raising — just the findings | `audit` |
+| A whole named feature set, in one call | `audit_features` |
+| The sweep's aggregate verdict and per-feature results | `FeatureSetAudit` |
+| A finding as report evidence (deterministic JSON) | `CompileResult.to_json`, `FeatureSetAudit.to_json` |
 | How much accuracy did this pipeline borrow from the future? | `borrowed_accuracy` |
 | The gap, the per-component attribution and the coalition values | `BorrowedAccuracyReport` |
 | One pipeline stage, runnable permissively or point-in-time | `Component` |
@@ -62,6 +65,81 @@ and ranks, interpolation, and `.over` scoping. `AnonymousFunction` nodes
 operator is registered as a [`FeatureSpec`](registry.md), whose
 `panel_safe` / `leakage_safe` declarations make it a trusted leaf.
 
+## `audit_features` — a whole feature set in one call
+
+`audit` answers for one expression; a feature set is dozens.
+`audit_features(features, time=..., entity=...)` runs `audit` over every
+feature with the same keys, options and declared `trust`, and returns a
+`FeatureSetAudit`: one `CompileResult` per feature in input order, an aggregate
+`verdict` (the worst of its parts), `ok`, the `refused` / `rewritten` feature
+names, and `exprs()` — the compiled expressions aliased to their names, ready
+for `with_columns`, or `LeakageRefused` naming every refusal. `features` is a
+mapping `{name: expr}` or an iterable of aliased expressions; names must be
+unique. Like `audit`, it never raises because a feature leaks.
+
+```python
+from panelary.leakage import audit_features
+
+report = audit_features(
+    {"mom_20": momentum, "vol_fill": vol.fill_null(strategy="backward").over("ticker")},
+    time="date",
+    entity="ticker",
+)
+report.verdict, report.refused, report.rewritten
+report.to_json()          # one deterministic evidence payload
+```
+
+`Pipeline.audit` (`panelary.core.pipeline`) is the same sweep over a
+pipeline's steps; its `PipelineAudit` serialises the same way.
+
+## Report evidence: `to_dict()` / `to_json()`
+
+`Finding`, `CompileResult`, `FeatureSetAudit` and `PipelineAudit` (with its
+`StepAudit`s) each have `to_dict()` and `to_json(*, indent=None)`. The
+convention, shared with `BorrowedAccuracyReport`:
+
+- `to_dict()` returns a JSON-safe plain dict (str / int / bool / None / list /
+  dict only). Enums are their values; expressions are Polars' display string
+  (`str(expr)`) with any memory address masked — a display form, not a
+  round-trippable serialisation (an opaque `map_batches` renders as
+  `python_udf()`, a rolling window omits its length).
+- `to_json()` is `json.dumps(to_dict(), sort_keys=True, separators=(",", ":"))`:
+  **byte-identical across runs and processes** for the same input — no
+  timestamps, ids or addresses — so a consumer can content-address it.
+  `indent=` pretty-prints (keys still sorted). `NaN` is refused rather than
+  emitted.
+- Every top-level payload carries `"schema": "panelary.<TypeName>/1"` and
+  `"produced_by": "panelary.<module>.<fn>@<version>"` — e.g.
+  `panelary.leakage.audit@0.5.0`, `panelary.leakage.audit_features@0.5.0`,
+  `panelary.core.pipeline.Pipeline.audit@0.5.0` — naming what to re-run.
+
+A `CompileResult` payload holds `verdict`, `source` (the audited expression),
+`expr` (the compiled one; `null` when refused), `context` (`time`, `entity`,
+`allow_approximate`, sorted `trust` — so an acceptance on declared trust is
+visible), `counts` and `findings`. Each finding has `kind`, `classification`,
+`reason`, `path` and `locator` (the path as a dotted string, `"<root>"` for the
+root node) and `rewrote_to`.
+
+### Mapping onto an assessment report's `Evidence`
+
+An assessment or audit engine that records evidence as `kind` / `locator` /
+`observed` / `expected` / `produced_by` (for example as
+`Evidence(kind=STATIC_ANALYSIS, ...)`) maps one record per non-safe finding:
+
+| Evidence field | From the payload |
+| --- | --- |
+| `kind` | `STATIC_ANALYSIS` — the compiler inspected pipeline source, it did not run it |
+| `locator` | `f"feature:{feature['name']}#{finding['locator']}"` (for a pipeline: step name, then expression name) |
+| `observed` | `{"expr": result["source"], "node": finding["kind"], "classification": finding["classification"], "reason": finding["reason"]}` |
+| `expected` | `{"expr": result["expr"], "rewrote_to": finding["rewrote_to"]}` — the point-in-time form; `expr` is `null` for a refusal, which *is* the finding |
+| `produced_by` | `result["produced_by"]` (e.g. `panelary.leakage.audit@0.5.0`) |
+
+Findings with `classification == "safe"` are the trust-based acceptances; keep
+them if the report should show what was accepted on declaration rather than
+verified. Because `observed` / `expected` are built from the canonical payload,
+the engine's content-addressed evidence id is stable across re-runs. The recipe
+is exercised in `tests/test_leakage_json.py`.
+
 ## `borrowed_accuracy`
 
 Give it a list of `Component`s, each runnable in two modes — *permissive* (fit
@@ -77,8 +155,9 @@ phi_i = Σ over S ⊆ N\{i} of  |S|!(k−|S|−1)!/k!  ·  ( v(S ∪ {i}) − v(
 
 which costs `2^k` evaluations. At the component counts that occur in
 practice — a scaler, an imputer, an encoder, a feature generator, model
-selection, retrieval — that is exact and affordable, so **nothing is sampled**;
-`max_components` (default 12) is the guard against the combinatorial blow-up.
+selection, retrieval — that is exact and affordable, so **nothing is sampled by
+default**; `max_components` (default 12) is the guard against the combinatorial
+blow-up.
 `Σ phi_i == B` — Shapley efficiency — is what makes this a *decomposition*
 rather than a set of ablations, and it is asserted as a property test alongside
 null-player (a component with no leakage gets `phi == 0`) and symmetry.
@@ -86,6 +165,14 @@ null-player (a component with no leakage gets `phi == 0`) and symmetry.
 The returned `BorrowedAccuracyReport` carries `total`, the per-component
 `attribution`, both endpoint scores, and the full `coalition_values` map, so the
 attribution can be re-derived rather than taken on trust.
+
+`evaluate` may return a vector of independent replicate scores (one per seed);
+each replicate is solved exactly and the report adds `replicate_attribution`
+and `attribution_median` / `attribution_range`. Beyond `max_components`,
+`method="permutation", n_permutations=M` is an opt-in sampled estimate
+(antithetic pairs, at most `M(k−1)+2` evaluations, efficiency kept, a standard
+error per component). Both are do-Shapley values whose coalitions are executed
+rather than estimated (Jung et al., ICML 2022).
 
 The expensive part is point-in-time refitting. Refit at fold boundaries rather
 than at every `t`; the error that introduces is itself measurable by refining

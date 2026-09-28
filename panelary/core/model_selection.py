@@ -36,6 +36,15 @@ assumed to span ``[t, t + horizon]`` (the prediction horizon). An observation is
 window; an additional **embargo** of ``embargo`` time-steps after each test
 block is removed from training to handle serial correlation.
 
+Both ``horizon`` and ``embargo`` may instead be a **calendar duration** -- a
+``datetime.timedelta``, a Polars duration string (``"5d"``, ``"1mo"``), or
+:class:`BusinessDays` (``"5bd"`` for short) -- applied to the actual time
+values rather than to positions. On an irregular axis (weekends, holidays, a
+gap in the data) "five rows" and "five business days" are different amounts of
+time, and only the second is what a serial-correlation argument is about. An
+``int`` keeps its historical meaning (positions in the sorted unique-time
+index) and produces byte-identical folds.
+
 All splitters yield ``(train, test)`` as :class:`PanelFrame` pairs by default,
 or as integer time-index positions when ``return_indices=True``.
 """
@@ -53,6 +62,14 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import polars as pl
 
+from panelary.core._calendar import (
+    BusinessDays,
+    Duration,
+    as_steps,
+    is_steps,
+    shift_forward,
+    validate_duration,
+)
 from panelary.core.panel_frame import PanelFrame, as_panel
 from panelary.core.protocol import PanelTransformer
 from panelary.cross_validation import _walk_forward_cutoffs
@@ -61,6 +78,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 __all__ = [
+    "BusinessDays",
     "PurgedKFold",
     "CombinatorialPurgedCV",
     "expanding_window_split",
@@ -295,6 +313,118 @@ def _purge_embargo_positions_t1(
     return np.array([p for p in range(n_times) if p not in blocked], dtype=np.int64)
 
 
+def _calendar_embargo_positions(
+    times: pl.Series,
+    test_positions: np.ndarray,
+    embargo: Duration,
+) -> np.ndarray:
+    """Positions embargoed by a **calendar** duration after each test block.
+
+    For every contiguous block of test positions ending at time ``e``, every
+    later position whose time is ``<= shift_forward(e, embargo)`` is blocked --
+    the calendar analogue of "the next ``embargo`` positions". On an irregular
+    axis the two differ: five business days after a Friday block end blocks
+    through the following Friday whether the data has five rows in that span,
+    three (a holiday and a gap), or ten (intraday bars).
+
+    Parameters
+    ----------
+    times : polars.Series
+        Sorted unique time values (``Date`` or ``Datetime``), aligned to
+        positions ``0..n_times-1``.
+    test_positions : ndarray of int
+        Test positions into ``times``.
+    embargo : Duration
+        A calendar duration (not an ``int``); see
+        :mod:`panelary.core._calendar`.
+
+    Returns
+    -------
+    ndarray of int
+        Sorted positions to remove from training (never a test position).
+    """
+    test_arr = np.array(sorted({int(p) for p in test_positions}), dtype=np.int64)
+    blocks = _contiguous_blocks(test_arr)
+    if not blocks:
+        return np.array([], dtype=np.int64)
+    ends = times.gather([end for _start, end in blocks])
+    limits = shift_forward(ends, embargo).to_numpy()
+    values = times.to_numpy()
+    test_set = set(test_arr.tolist())
+    blocked: set[int] = set()
+    for (_start, end), limit in zip(blocks, limits, strict=True):
+        hi = int(np.searchsorted(values, limit, side="right"))  # times[:hi] <= limit
+        blocked.update(j for j in range(end + 1, hi) if j not in test_set)
+    return np.array(sorted(blocked), dtype=np.int64)
+
+
+def _train_positions(
+    n_times: int,
+    test_positions: np.ndarray,
+    *,
+    horizon: int | Duration,
+    embargo: int | Duration,
+    times: pl.Series | None = None,
+    t1: np.ndarray | None = None,
+) -> np.ndarray:
+    """Train positions after purge + embargo, for integer **or** calendar specs.
+
+    The single dispatcher every splitter goes through:
+
+    * integer ``horizon`` and ``embargo`` with no ``t1`` -- exactly
+      :func:`_purge_embargo_positions`, the historical path (byte-identical);
+    * an explicit ``t1`` -- exactly :func:`_purge_embargo_positions_t1`;
+    * a calendar ``horizon`` -- the label of the observation at ``tau`` spans
+      ``[tau, shift_forward(tau, horizon)]``, so ``t1`` is derived from the
+      time values and the ``t1`` path does the (closed-interval) purge;
+    * a calendar ``embargo`` -- :func:`_calendar_embargo_positions` is removed
+      from whatever the purge left.
+
+    ``times`` (the sorted unique time values, as a Polars series so dtype and
+    time zone survive) is required whenever a spec is calendar-valued.
+    """
+    int_embargo = as_steps(embargo) if is_steps(embargo) else 0
+    calendar = not (is_steps(horizon) and is_steps(embargo))
+    if (calendar or t1 is not None) and times is None:
+        raise TypeError(
+            "a calendar `horizon`/`embargo` (or a `t1`) is measured on the time "
+            "values, so the time index is required; pass `times=` (the sorted "
+            "unique times)."
+        )
+    if t1 is None and is_steps(horizon):
+        train = _purge_embargo_positions(
+            n_times, test_positions, as_steps(horizon), int_embargo
+        )
+    else:
+        assert times is not None  # guaranteed by the check above
+        if t1 is None:
+            t1 = shift_forward(times, horizon).to_numpy()
+        train = _purge_embargo_positions_t1(
+            n_times, test_positions, times.to_numpy(), t1, int_embargo
+        )
+    if not is_steps(embargo):
+        assert times is not None
+        blocked = _calendar_embargo_positions(times, test_positions, embargo)
+        if blocked.size:
+            train = train[~np.isin(train, blocked)]
+    return train
+
+
+def _check_time_axis(times: pl.Series, *specs: tuple[str, object]) -> None:
+    """Fail early, with the parameter name, if a calendar spec meets a non-temporal axis."""
+    dtype = times.dtype
+    if dtype == pl.Date or isinstance(dtype, pl.Datetime):
+        return
+    for name, spec in specs:
+        if not is_steps(spec):
+            raise TypeError(
+                f"`{name}`={spec!r} is a calendar duration, but the panel's time "
+                f"axis is {dtype}. Calendar embargo/purge needs a Date or Datetime "
+                f"time column; on an integer axis pass `{name}` as an int number "
+                "of time-steps."
+            )
+
+
 def _resolve_t1(t1: object, pf: PanelFrame, times: np.ndarray) -> np.ndarray | None:
     """Resolve a ``t1`` spec into an end-time array aligned to ``times``.
 
@@ -352,11 +482,22 @@ class PurgedKFold:
     ----------
     n_splits : int, default=5
         Number of folds. Must be >= 2.
-    horizon : int, default=0
-        Label horizon in time-steps used for purging. ``0`` means each label is
-        point-in-time (only the exact test times are purged from train).
-    embargo : int, default=0
-        Number of time-steps after each test block to embargo from training.
+    horizon : int or duration, default=0
+        Label horizon used for purging. An ``int`` counts time-steps (``0``
+        means each label is point-in-time: only the exact test times are
+        purged from train). A calendar duration -- ``datetime.timedelta``,
+        ``"5d"``, ``"1mo"``, :class:`BusinessDays` / ``"5bd"`` -- means the
+        label of the observation at ``tau`` spans ``[tau, tau + horizon]`` on
+        the actual time values. Ignored when ``t1`` is given.
+    embargo : int or duration, default=0
+        What to embargo from training after each test block. An ``int`` counts
+        time-steps (positions), exactly as before. A calendar duration removes
+        every later time ``<= block_end + embargo`` -- e.g. ``"5bd"`` or
+        ``BusinessDays(5, holidays=...)`` embargoes five *business days*
+        however many rows the data happens to have in that span. Calendar
+        specs need a ``Date`` / ``Datetime`` time column.
+    t1 : str or array-like, optional
+        Per-time label end times (event-based purge); supersedes ``horizon``.
     return_indices : bool, default=False
         If True, :meth:`split` yields ``(train_positions, test_positions)`` as
         integer numpy arrays into the sorted unique time index. If False
@@ -365,7 +506,11 @@ class PurgedKFold:
     Raises
     ------
     ValueError
-        If ``n_splits < 2``, ``horizon < 0``, or ``embargo < 0``.
+        If ``n_splits < 2``, ``horizon < 0``, or ``embargo < 0`` (or a
+        negative / malformed duration).
+    TypeError
+        If ``horizon`` / ``embargo`` is neither an ``int`` nor a duration, or
+        (at :meth:`split`) a calendar duration meets a non-temporal time axis.
 
     References
     ----------
@@ -378,23 +523,30 @@ class PurgedKFold:
     >>> for train, test in cv.split(panel):  # doctest: +SKIP
     ...     model.fit(train)
     ...     preds = model.predict(test)
+
+    A calendar embargo on a daily panel -- five business days, skipping a
+    holiday -- whatever the number of rows in that span:
+
+    >>> cv = PurgedKFold(  # doctest: +SKIP
+    ...     n_splits=5, horizon="1d", embargo=BusinessDays(5, holidays=["2024-12-25"])
+    ... )
     """
 
     def __init__(
         self,
         n_splits: int = 5,
         *,
-        horizon: int = 0,
-        embargo: int = 0,
+        horizon: int | Duration = 0,
+        embargo: int | Duration = 0,
         t1: object | None = None,
         return_indices: bool = False,
     ) -> None:
         if n_splits < 2:
             raise ValueError(f"`n_splits` must be >= 2, got {n_splits}.")
-        if horizon < 0:
-            raise ValueError(f"`horizon` must be >= 0, got {horizon}.")
-        if embargo < 0:
-            raise ValueError(f"`embargo` must be >= 0, got {embargo}.")
+        # An int keeps the historical check and message; a duration is
+        # validated (and "5bd" normalised to BusinessDays) once, here.
+        horizon = validate_duration(horizon, name="horizon")
+        embargo = validate_duration(embargo, name="embargo")
         self.n_splits = n_splits
         self.horizon = horizon
         self.embargo = embargo
@@ -439,17 +591,31 @@ class PurgedKFold:
             PanelFrames, or integer position arrays if ``return_indices=True``.
         """
         pf = as_panel(panel)
-        times = _unique_times(pf)
+        time_index = pf.time_index()
+        times = time_index.to_numpy()
         n_times = times.shape[0]
         t1_arr = _resolve_t1(self.t1, pf, times)
+        _check_time_axis(
+            time_index, ("horizon", self.horizon), ("embargo", self.embargo)
+        )
         for test_pos in self._test_position_folds(n_times):
-            if t1_arr is None:
+            if t1_arr is None and is_steps(self.horizon) and is_steps(self.embargo):
+                # The historical integer path, untouched.
                 train_pos = _purge_embargo_positions(
-                    n_times, test_pos, self.horizon, self.embargo
+                    n_times, test_pos, as_steps(self.horizon), as_steps(self.embargo)
+                )
+            elif is_steps(self.embargo) and t1_arr is not None:
+                train_pos = _purge_embargo_positions_t1(
+                    n_times, test_pos, times, t1_arr, as_steps(self.embargo)
                 )
             else:
-                train_pos = _purge_embargo_positions_t1(
-                    n_times, test_pos, times, t1_arr, self.embargo
+                train_pos = _train_positions(
+                    n_times,
+                    test_pos,
+                    horizon=self.horizon,
+                    embargo=self.embargo,
+                    times=time_index,
+                    t1=t1_arr,
                 )
             if self.return_indices:
                 yield train_pos, test_pos
@@ -490,10 +656,15 @@ class CombinatorialPurgedCV:
         Number of contiguous time groups ``N``. Must be >= 2.
     n_test_groups : int, default=2
         Number of groups per test set ``k`` (``1 <= k < N``).
-    horizon : int, default=0
-        Label horizon in time-steps used for purging.
-    embargo : int, default=0
-        Embargo in time-steps applied after each contiguous test block.
+    horizon : int or duration, default=0
+        Label horizon used for purging: time-steps (``int``) or a calendar
+        duration, exactly as in :class:`PurgedKFold`.
+    embargo : int or duration, default=0
+        Embargo after each contiguous test block: time-steps (``int``) or a
+        calendar duration (``"5d"``, ``"5bd"``, :class:`BusinessDays`,
+        ``datetime.timedelta``), exactly as in :class:`PurgedKFold`.
+    t1 : str or array-like, optional
+        Per-time label end times (event-based purge); supersedes ``horizon``.
     return_indices : bool, default=False
         If True, yield integer position arrays; else PanelFrames.
 
@@ -521,8 +692,8 @@ class CombinatorialPurgedCV:
         n_groups: int = 6,
         n_test_groups: int = 2,
         *,
-        horizon: int = 0,
-        embargo: int = 0,
+        horizon: int | Duration = 0,
+        embargo: int | Duration = 0,
         t1: object | None = None,
         return_indices: bool = False,
     ) -> None:
@@ -533,10 +704,8 @@ class CombinatorialPurgedCV:
                 f"`n_test_groups` must satisfy 1 <= k < n_groups "
                 f"({n_groups}), got {n_test_groups}."
             )
-        if horizon < 0:
-            raise ValueError(f"`horizon` must be >= 0, got {horizon}.")
-        if embargo < 0:
-            raise ValueError(f"`embargo` must be >= 0, got {embargo}.")
+        horizon = validate_duration(horizon, name="horizon")
+        embargo = validate_duration(embargo, name="embargo")
         self.n_groups = n_groups
         self.n_test_groups = n_test_groups
         self.horizon = horizon
@@ -584,21 +753,40 @@ class CombinatorialPurgedCV:
         n_times: int,
         times: np.ndarray | None = None,
         t1_arr: np.ndarray | None = None,
+        time_index: pl.Series | None = None,
     ) -> Iterator[_CPCVFold]:
         groups = self._group_positions(n_times)
+        integer = is_steps(self.horizon) and is_steps(self.embargo)
+        if not integer and time_index is None:
+            raise TypeError(
+                "this CombinatorialPurgedCV has a calendar `horizon`/`embargo`, "
+                "which is measured on time values; the time index is required "
+                "(split a panel, or pass `times=` to the positional helper)."
+            )
         for test_combo in itertools.combinations(
             range(self.n_groups), self.n_test_groups
         ):
             test_pos = np.sort(np.concatenate([groups[g] for g in test_combo])).astype(
                 np.int64
             )
-            if t1_arr is None:
+            if t1_arr is None and integer:
+                # The historical integer path, untouched.
                 train_pos = _purge_embargo_positions(
-                    n_times, test_pos, self.horizon, self.embargo
+                    n_times, test_pos, as_steps(self.horizon), as_steps(self.embargo)
+                )
+            elif t1_arr is not None and is_steps(self.embargo):
+                assert times is not None  # a t1 is only resolved against times
+                train_pos = _purge_embargo_positions_t1(
+                    n_times, test_pos, times, t1_arr, as_steps(self.embargo)
                 )
             else:
-                train_pos = _purge_embargo_positions_t1(
-                    n_times, test_pos, times, t1_arr, self.embargo
+                train_pos = _train_positions(
+                    n_times,
+                    test_pos,
+                    horizon=self.horizon,
+                    embargo=self.embargo,
+                    times=time_index,
+                    t1=t1_arr,
                 )
             yield _CPCVFold(
                 test_groups=test_combo,
@@ -645,10 +833,14 @@ class CombinatorialPurgedCV:
             reconstruction of the :attr:`n_paths` backtest paths.
         """
         pf = as_panel(panel)
-        times = _unique_times(pf)
+        time_index = pf.time_index()
+        times = time_index.to_numpy()
         n_times = times.shape[0]
         t1_arr = _resolve_t1(self.t1, pf, times)
-        for fold in self._iter_folds(n_times, times, t1_arr):
+        _check_time_axis(
+            time_index, ("horizon", self.horizon), ("embargo", self.embargo)
+        )
+        for fold in self._iter_folds(n_times, times, t1_arr, time_index):
             if self.return_indices:
                 yield fold.train_positions, fold.test_positions, fold.test_groups
             else:
@@ -1606,8 +1798,8 @@ class _Validate:
         *,
         n_groups: int = 6,
         n_test_groups: int = 2,
-        horizon: int = 0,
-        embargo: int = 0,
+        horizon: int | Duration = 0,
+        embargo: int | Duration = 0,
         t1: object | None = None,
         entity: str | None = None,
         time: str | None = None,
@@ -1644,8 +1836,8 @@ class _Validate:
         y: object = None,
         *,
         n_splits: int = 5,
-        horizon: int = 0,
-        embargo: int = 0,
+        horizon: int | Duration = 0,
+        embargo: int | Duration = 0,
         t1: object | None = None,
         entity: str | None = None,
         time: str | None = None,

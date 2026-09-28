@@ -132,6 +132,10 @@ class StepAudit:
         the order the step offered them. Empty for an attribute-audited step.
     nested : PipelineAudit or None
         The sub-report when the step is itself a :class:`Pipeline`.
+    expr_names : tuple of str
+        The names under which the step offered its expressions, aligned with
+        ``results`` (``leakage_exprs()`` keys). Empty for an attribute-audited
+        step.
     """
 
     name: str
@@ -142,6 +146,43 @@ class StepAudit:
     reasons: tuple[str, ...] = ()
     results: tuple[Any, ...] = ()
     nested: PipelineAudit | None = None
+    expr_names: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """This step's verdict as a JSON-safe plain dict.
+
+        Keys: ``name``, ``step`` (class name), ``verdict``, ``panel_safe``,
+        ``leakage_safe``, ``reasons``, ``audited_by`` (``"expressions"`` when
+        the compiler walked offered expressions, ``"pipeline"`` for a nested
+        pipeline, else ``"declaration"`` -- the step was judged on its
+        ``panel_safe`` / ``leakage_safe`` attributes alone), ``results`` (one
+        ``{"name", "result"}`` per offered expression, each result a
+        :meth:`panelary.leakage.CompileResult.to_dict`) and ``nested`` (a
+        :meth:`PipelineAudit.to_dict`, or ``None``).
+        """
+        names = list(self.expr_names) + [
+            f"#{i}" for i in range(len(self.expr_names), len(self.results))
+        ]
+        if self.nested is not None:
+            audited_by = "pipeline"
+        elif self.results or self.expr_names:
+            audited_by = "expressions"
+        else:
+            audited_by = "declaration"
+        return {
+            "name": self.name,
+            "step": self.step,
+            "verdict": str(getattr(self.verdict, "value", self.verdict)),
+            "panel_safe": bool(self.panel_safe),
+            "leakage_safe": bool(self.leakage_safe),
+            "reasons": [str(r) for r in self.reasons],
+            "audited_by": audited_by,
+            "results": [
+                {"name": n, "result": r.to_dict()}
+                for n, r in zip(names, self.results, strict=False)
+            ],
+            "nested": None if self.nested is None else self.nested.to_dict(),
+        }
 
     def __str__(self) -> str:  # pragma: no cover - display only
         why = "; ".join(self.reasons)
@@ -181,6 +222,53 @@ class PipelineAudit:
     def rewritten(self) -> tuple[StepAudit, ...]:
         """The steps :meth:`Pipeline.causalize` would rewrite."""
         return tuple(s for s in self.steps if s.verdict == _REWRITTEN)
+
+    #: Serialisation schema tag; bump the suffix on any breaking change.
+    SCHEMA = "panelary.PipelineAudit/1"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The whole pipeline audit as a JSON-safe plain dict -- report evidence.
+
+        Returns
+        -------
+        dict
+            ``schema`` (``"panelary.PipelineAudit/1"``), ``produced_by``
+            (``"panelary.core.pipeline.Pipeline.audit@<version>"``),
+            ``verdict``, ``ok``, ``counts`` (steps per verdict), ``refused`` /
+            ``rewritten`` (step names, pipeline order) and ``steps`` (each
+            :meth:`StepAudit.to_dict`, in pipeline order).
+
+        Notes
+        -----
+        Same convention as :meth:`panelary.leakage.CompileResult.to_dict`:
+        no timestamps, ids or memory addresses, so :meth:`to_json` is
+        byte-identical across runs.
+        """
+        from panelary.leakage._types import produced_by
+
+        counts = {_SAFE: 0, _REWRITTEN: 0, _REFUSED: 0}
+        for step in self.steps:
+            counts[str(getattr(step.verdict, "value", step.verdict))] += 1
+        return {
+            "schema": self.SCHEMA,
+            "produced_by": produced_by("panelary.core.pipeline.Pipeline.audit"),
+            "verdict": self.verdict,
+            "ok": self.ok,
+            "counts": counts,
+            "refused": [s.name for s in self.refused],
+            "rewritten": [s.name for s in self.rewritten],
+            "steps": [s.to_dict() for s in self.steps],
+        }
+
+    def to_json(self, *, indent: int | None = None) -> str:
+        """:meth:`to_dict` as canonical JSON (sorted keys, compact by default).
+
+        With ``indent=None`` this is ``json.dumps(self.to_dict(),
+        sort_keys=True, separators=(",", ":"))``: byte-identical across runs.
+        """
+        from panelary.leakage._types import canonical_json
+
+        return canonical_json(self.to_dict(), indent=indent)
 
     def __str__(self) -> str:  # pragma: no cover - display only
         head = f"PipelineAudit: {self.verdict} ({len(self.steps)} steps)"
@@ -441,7 +529,12 @@ class Pipeline(PanelTransformer):
                 reasons=reasons,
                 results=results,
                 nested=nested,
+                # Names of the offered expressions actually audited, aligned
+                # with ``results`` (a fail-closed early return may cut short).
+                expr_names=tuple(expr_names[: len(results)]),
             )
+
+        expr_names: list[str] = []
 
         # A nested Pipeline is audited as a pipeline, recursively.
         if isinstance(step, Pipeline):
@@ -459,6 +552,8 @@ class Pipeline(PanelTransformer):
             )
 
         exprs = _step_exprs(step)
+        if exprs is not None:
+            expr_names.extend(exprs)
 
         if exprs is None:
             # Nothing for the compiler to walk. The honest reading of an

@@ -57,12 +57,14 @@ from panelary.leakage._borrowed import (
 )
 from panelary.leakage._compile import (
     audit,
+    audit_features,
     causalize,
 )
 from panelary.leakage._types import (
     Classification,
     CompileResult,
     Context,
+    FeatureSetAudit,
     Finding,
     LeakageRefused,
     Verdict,
@@ -74,10 +76,12 @@ __all__ = [
     "CompileResult",
     "Component",
     "Context",
+    "FeatureSetAudit",
     "Finding",
     "LeakageRefused",
     "Verdict",
     "audit",
+    "audit_features",
     "borrowed_accuracy",
     "causalize",
 ]

@@ -17,6 +17,10 @@ typed, lazy-first (pure Polars) foundation that every higher-level component
   cross-validation (:class:`PurgedKFold`, :class:`CombinatorialPurgedCV`,
   walk-forward splitters) and de Prado overfitting metrics
   (:func:`deflated_sharpe_ratio`, :func:`probability_of_backtest_overfitting`).
+  Embargo and purge horizons also accept calendar durations and
+  :class:`BusinessDays`.
+* :func:`~panelary.core.asof.asof_join` — the bitemporal point-in-time join: each
+  row sees a value only once it was known.
 
 All public names are re-exported here and (additively) from the top-level
 ``panelary`` package.
@@ -24,7 +28,9 @@ All public names are re-exported here and (additively) from the top-level
 
 from __future__ import annotations
 
+from panelary.core.asof import asof_join
 from panelary.core.model_selection import (
+    BusinessDays,
     CombinatorialPurgedCV,
     PurgedKFold,
     deflated_sharpe_ratio,
@@ -45,7 +51,10 @@ __all__ = [
     "PanelEstimator",
     # Pipeline
     "Pipeline",
+    # Point-in-time join
+    "asof_join",
     # Cross-validation
+    "BusinessDays",
     "PurgedKFold",
     "CombinatorialPurgedCV",
     "expanding_window_split",
