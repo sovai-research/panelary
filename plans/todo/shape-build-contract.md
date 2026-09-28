@@ -1,5 +1,46 @@
 # `panelary/shape/` — build contract
 
+> **Status (2026-09-28): partially implemented.** Wave 1 (M1–M3) is built and
+> tested. The pieces are the spine (`_axes`, `_tensor`, `_window`, `_array`), all
+> §4 primitives (`_rsvd`, `_project`, `_sketch`, `_id`, `_paa`, `_spectral`,
+> `_delay`, `_tucker`), `_explain` (`explain()`, `stability`, `procrustes`), the
+> registry extension, the `reduce/` options (`PanelPCA`/`PanelSVD`
+> `backend="sklearn"|"numpy"|"auto"`, `PanelRandomProjection`
+> `method="gaussian"|"sparse"|"srht"`), the `pn.reduce` / `pn.features` method
+> wiring, and `docs/user-guide/shape.md` + `docs/api-reference/shape.md`.
+> The §9 tests `tests/test_shape_{prefix_invariance,leak_safety,stateless,roundtrip,agreement,window,verbs}.py`
+> pass, and so does the conformance suite; the tensorly cross-check skips
+> because tensorly is not installed.
+>
+> **Not done:**
+> - M4 (Wave 2) has not started.
+> - The full `make check` was not run.
+> - `llms.txt`, `mkdocs.yml`, `CHANGELOG.md` and the top-level `pn.shape`
+>   export are orchestrator-owned.
+> - `Pipeline` does not call `plan()` (§3.4). `plan_chain()` exists instead.
+>
+> **Deviations:**
+> - `shape/__init__.py` is lazy (PEP 562). `import panelary` loads only
+>   `panelary.shape` + `_tensor` (the `cluster` re-export makes §9.7's "does
+>   not pull `shape/`" impossible verbatim). The catalogue registers on first
+>   access.
+> - Procrustes alignment lives in `shape/_explain.py`, because `shape` must not
+>   import `embed`.
+> - `PartialTucker` and `CrossSectionalRandomizedPCA` stay out of the registry.
+>
+> **§9 targets, measured (Accelerate BLAS; thread caps had no measurable
+> effect):**
+> - `RandomizedPCA(k=16)` on the wide panel fits in 1.18 s, against 2.45 s for
+>   `sklearn` `PCA(svd_solver="randomized")`. That meets the target, but only
+>   after switching to CholeskyQR2; with Householder QR it was 3.7 s.
+>   `sklearn`'s `"auto"` solver (`covariance_eigh`, 0.74 s) is faster still,
+>   so the `backend` default stays `"sklearn"`.
+> - Trailing PAA / Spectral have no per-entity Python loop at all. On a
+>   1M-row panel the kernel is 64% (PAA, 122 ms total) and 97% (Spectral) of
+>   the time.
+>
+> The full table is in `docs/user-guide/shape.md` under "Measured performance".
+
 A **shape algebra** for panels: transforms that change the *shape* of a panel
 (the width of a named axis, the order of the tensor, or the numerical rank of a
 factorization) while leaving the meaning of `entity` / `time` / `feature`

@@ -96,6 +96,18 @@ try:
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
     _evolve = None  # type: ignore[assignment]
 
+# The shape algebra registers its catalogue the first time a public name is read
+# from `panelary.shape` -- its package initialiser is lazy, so `import panelary`
+# loads no transform module (plan `shape-build-contract.md` section 9, item 7).
+# Load it here for the same reason as `evolve` above: the parametrisation must
+# not depend on which test module happened to touch `panelary.shape` first.
+try:
+    import panelary.shape as _shape
+
+    _shape.PAA  # noqa: B018 - the first access registers every shape FeatureSpec
+except Exception:  # noqa: BLE001 - an import failure just means fewer specs
+    _shape = None  # type: ignore[assignment]
+
 
 # --------------------------------------------------------------------------- #
 # Probe panel
@@ -209,6 +221,75 @@ _FRAME_OPS: dict[str, Callable[[Any], Any]] = {
     "forward_return": _forward_return_op,
 }
 
+
+def _shape_op(factory: Callable[[], Any]) -> Callable[[Any], Any]:
+    """A ``panelary.shape`` transform as a ``frame -> frame`` callable.
+
+    Every call builds a fresh instance and runs ``fit_transform`` on exactly the
+    frame it is handed. For a stateless (``fit_is_empty``) transform the fit
+    learns nothing, so any look-ahead or length dependence the verifiers find is
+    the kernel's own. For a fitted one the fit sees the whole (possibly
+    truncated) panel -- which is precisely the ``"window"`` claim that section 4
+    below corroborates.
+    """
+
+    def op(frame: Any) -> Any:
+        return factory().fit_transform(frame)
+
+    return op
+
+
+#: ``panelary.shape`` transforms, as ``name -> (rendering, factory)``, run on
+#: the probe panel's two value columns. Windows are short enough that the
+#: shortest entity (12 rows) still has full ones. The ``rowwise`` specs are
+#: exactly the stateless transforms; ``rsvd`` and ``frequent_directions`` are
+#: ``window`` specs, driven here for the evidence of section 4.
+_SHAPE_FRAME_OPS: dict[str, tuple[str, Callable[[], Any]]] = (
+    {}
+    if _shape is None
+    else {
+        "paa": (
+            "PAA(window=4, segments=2)",
+            lambda: _shape.PAA(window=4, segments=2, columns=[VALUE, AUX]),
+        ),
+        "spectral": (
+            "Spectral(window=4, k=2)",
+            lambda: _shape.Spectral(window=4, k=2, columns=[VALUE, AUX]),
+        ),
+        "delay": (
+            "Delay(lags=3, dilation=2)",
+            lambda: _shape.Delay(lags=3, dilation=2, columns=[VALUE, AUX]),
+        ),
+        "sparse_rp": (
+            "SparseRandomProjection(n_components=2, seed=0)",
+            lambda: _shape.SparseRandomProjection(
+                n_components=2, seed=0, columns=[VALUE, AUX]
+            ),
+        ),
+        "srht": (
+            "SRHT(n_components=2, seed=0)",
+            lambda: _shape.SRHT(n_components=2, seed=0, columns=[VALUE, AUX]),
+        ),
+        "count_sketch": (
+            "CountSketch(n_components=2, seed=0)",
+            lambda: _shape.CountSketch(n_components=2, seed=0, columns=[VALUE, AUX]),
+        ),
+        "rsvd": (
+            "RandomizedPCA(n_components=1)",
+            lambda: _shape.RandomizedPCA(n_components=1, columns=[VALUE, AUX]),
+        ),
+        "frequent_directions": (
+            "FrequentDirections(ell=2, n_components=1)",
+            lambda: _shape.FrequentDirections(
+                ell=2, n_components=1, columns=[VALUE, AUX]
+            ),
+        ),
+    }
+)
+_FRAME_OPS.update(
+    {name: _shape_op(factory) for name, (_r, factory) in _SHAPE_FRAME_OPS.items()}
+)
+
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
 #: operator that does not hand back a panel cannot be checked by them.
@@ -222,6 +303,21 @@ _NOT_EXERCISABLE: dict[str, str] = {
         "no per-row outputs to compare"
     ),
 }
+if _shape is not None:
+    _NOT_EXERCISABLE.update(
+        {
+            "column_subset": (
+                "emits the kept input columns verbatim, so a per-row prefix check "
+                "is degenerate by construction; that the column choice is learned "
+                "from the fit panel only is tested in tests/test_shape_leak_safety.py"
+            ),
+            "cur": (
+                "its transform is ColumnSubset's (the kept input columns "
+                "verbatim) and its factors are not a panel; covered in "
+                "tests/test_shape_leak_safety.py and tests/test_shape_roundtrip.py"
+            ),
+        }
+    )
 
 #: Failures that are already written up and waiting on an owner's decision. This
 #: does NOT suppress anything -- the test still fails -- it only appends the
@@ -335,6 +431,8 @@ def _build_op(spec: FeatureSpec) -> tuple[Any | None, str | None]:
 
 def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
+    if spec.name in _SHAPE_FRAME_OPS:
+        return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
     if spec.name in _FRAME_OPS:
         return f"panelary.factor.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":

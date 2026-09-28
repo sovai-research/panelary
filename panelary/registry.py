@@ -57,6 +57,10 @@ __all__ = [
     "PERMISSIVE_LICENSES",
     "VALID_SAFE_SCOPES",
     "VALID_TIERS",
+    "VALID_INTENTS",
+    "VALID_AXES",
+    "VALID_FLAVOURS",
+    "VALID_SHAPES",
 ]
 
 #: Licenses considered permissive enough to redistribute without copyleft
@@ -103,6 +107,36 @@ VALID_TIERS: frozenset[str] = frozenset({"A", "B", "C", "D"})
 #:   keep working, but Panelary's own registry is held to a stricter standard
 #:   by ``tests/test_registry_conformance.py``.
 VALID_SAFE_SCOPES: frozenset[str] = frozenset({"rowwise", "window", "unspecified"})
+
+# -- shape-algebra vocabulary (panelary.shape) -------------------------------
+# The optional shape fields below are metadata for transforms that change the
+# *shape* of a panel. They default to ``None`` / a neutral value, so every spec
+# registered before they existed validates unchanged. See
+# ``plans/todo/shape-build-contract.md`` section 2.
+
+#: Transform intents: narrow an axis, add width or an axis, return factors, or
+#: keep bounded mergeable state. :meth:`FeatureRegistry.audit` flags any other.
+VALID_INTENTS: frozenset[str] = frozenset({"compress", "lift", "factorize", "sketch"})
+
+#: Semantic axes a shape transform acts along. The axis *is* the leak contract:
+#: ``"time"`` is safe only in the trailing flavour, ``"entity"`` is never
+#: panel-safe, ``"feature"`` is safe iff fit on training rows.
+VALID_AXES: frozenset[str] = frozenset({"feature", "time", "entity", "lag"})
+
+#: Time-axis flavours. ``"whole_series"`` summarises each entity's entire
+#: history and can never be ``leakage_safe`` -- :meth:`FeatureRegistry.audit`
+#: flags a spec that claims otherwise.
+VALID_FLAVOURS: frozenset[str] = frozenset({"trailing", "whole_series"})
+
+#: Documented ``input_shape`` / ``output_shape`` vocabulary. ``"series"`` and
+#: ``"frame"`` are the expression-namespace shapes and ``"scalar"`` a
+#: series-to-one-number aggregate; ``"tensor"``, ``"factors"`` and ``"state"``
+#: are the shape algebra's (a dense ``(entity, time, feature)`` array, a
+#: factorisation, a sketch). Not enforced by :class:`FeatureSpec`, so
+#: third-party specs keep validating.
+VALID_SHAPES: frozenset[str] = frozenset(
+    {"series", "frame", "scalar", "tensor", "factors", "state"}
+)
 
 
 def _normalize_license(license_: str) -> str:
@@ -161,6 +195,23 @@ class FeatureSpec:
     backend_fn : Callable | None, optional
         The callable backing the operator, if one is registered directly.
         Often ``None`` because the implementation is a namespace method.
+    intent : str | None, optional
+        Shape-algebra intent, one of :data:`VALID_INTENTS`; ``None`` for
+        operators that do not change the shape of the panel (the default).
+    axis : str | None, optional
+        The semantic axis acted along, one of :data:`VALID_AXES`.
+    flavour : str | None, optional
+        For ``axis="time"``: ``"trailing"`` or ``"whole_series"``.
+    width_rule : str | None, optional
+        How output width is set: ``"exact"``, ``"rank_dependent"`` or
+        ``"data_dependent"``.
+    invertible : str, default "none"
+        ``"exact"``, ``"approximate"``, ``"from_factors"`` or ``"none"``.
+    streaming : str, default "batch"
+        ``"batch"``, ``"partial_fit"`` or ``"mergeable"``.
+    cost_hint : str | None, optional
+        Big-O cost, e.g. ``"O(n d k)"``. A ``T^2`` term is not allowed on a
+        tier ``A`` / ``B`` spec (see :meth:`FeatureRegistry.audit`).
 
     Notes
     -----
@@ -180,6 +231,14 @@ class FeatureSpec:
     source: str = ""
     license: str = ""
     backend_fn: Callable[..., Any] | None = None
+    # -- optional shape-algebra fields (panelary.shape); additive, defaulted --
+    intent: str | None = None
+    axis: str | None = None
+    flavour: str | None = None
+    width_rule: str | None = None
+    invertible: str = "none"
+    streaming: str = "batch"
+    cost_hint: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not isinstance(self.name, str):
@@ -376,13 +435,26 @@ class FeatureRegistry:
                     f"{key}: {getattr(val, '__name__', val)}"
                     for key, val in spec.params.items()
                 )
-                signature = f"pl.col(...).{spec.namespace}.{spec.name}({params})"
+                if spec.intent is not None and spec.backend_fn is not None:
+                    # A shape transform is a class, not an expression method.
+                    owner = getattr(spec.backend_fn, "__module__", "").split("._")[0]
+                    cls_name = getattr(spec.backend_fn, "__name__", spec.name)
+                    signature = f"{owner}.{cls_name}({params})"
+                else:
+                    signature = f"pl.col(...).{spec.namespace}.{spec.name}({params})"
                 lines.append(f"- {signature}")
                 lines.append(
                     f"    tier={spec.tier} "
                     f"input={spec.input_shape} output={spec.output_shape} "
                     f"panel_safe={spec.panel_safe} leakage_safe={spec.leakage_safe}"
                 )
+                if spec.intent is not None:
+                    lines.append(
+                        f"    intent={spec.intent} axis={spec.axis} "
+                        f"flavour={spec.flavour} scope={spec.safe_scope} "
+                        f"invertible={spec.invertible} streaming={spec.streaming} "
+                        f"cost={spec.cost_hint!r}"
+                    )
                 lines.append(f"    source={spec.source!r} license={spec.license!r}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
@@ -412,6 +484,17 @@ class FeatureRegistry:
             ``"non_permissive_license"``
                 Operators whose ``license`` is empty or not in
                 :data:`PERMISSIVE_LICENSES` — the GPL/copyleft tripwire.
+            ``"invalid_intent"``
+                Shape-algebra specs whose ``intent`` is set but not in
+                :data:`VALID_INTENTS`.
+            ``"whole_series_leakage_safe"``
+                Specs declaring ``flavour="whole_series"`` together with
+                ``leakage_safe=True`` -- a whole-series summary sees the
+                entity's future and cannot be leak-safe as a row feature.
+            ``"quadratic_cost_in_core_tier"``
+                Tier ``A`` / ``B`` specs whose ``cost_hint`` contains ``T^2``:
+                an O(T^2) expansion (GAF, recurrence plots) stays out of the
+                core tiers and behind a budget.
 
         Each list is sorted by operator name.
         """
@@ -419,6 +502,9 @@ class FeatureRegistry:
         missing_leakage_safe: list[str] = []
         missing_provenance: list[str] = []
         non_permissive_license: list[str] = []
+        invalid_intent: list[str] = []
+        whole_series_leakage_safe: list[str] = []
+        quadratic_cost_in_core_tier: list[str] = []
 
         for spec in self.all():
             if not spec.panel_safe:
@@ -432,12 +518,22 @@ class FeatureRegistry:
                 or _normalize_license(spec.license) not in PERMISSIVE_LICENSES
             ):
                 non_permissive_license.append(spec.name)
+            if spec.intent is not None and spec.intent not in VALID_INTENTS:
+                invalid_intent.append(spec.name)
+            if spec.flavour == "whole_series" and spec.leakage_safe:
+                whole_series_leakage_safe.append(spec.name)
+            hint = (spec.cost_hint or "").replace(" ", "")
+            if spec.tier in {"A", "B"} and ("T^2" in hint or "T\u00b2" in hint):
+                quadratic_cost_in_core_tier.append(spec.name)
 
         return {
             "missing_panel_safe": missing_panel_safe,
             "missing_leakage_safe": missing_leakage_safe,
             "missing_provenance": missing_provenance,
             "non_permissive_license": non_permissive_license,
+            "invalid_intent": invalid_intent,
+            "whole_series_leakage_safe": whole_series_leakage_safe,
+            "quadratic_cost_in_core_tier": quadratic_cost_in_core_tier,
         }
 
     def clear(self) -> None:
@@ -459,6 +555,13 @@ def register_feature(
     source: str = "",
     license: str = "",
     target: FeatureRegistry | None = None,
+    intent: str | None = None,
+    axis: str | None = None,
+    flavour: str | None = None,
+    width_rule: str | None = None,
+    invertible: str = "none",
+    streaming: str = "batch",
+    cost_hint: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that builds a :class:`FeatureSpec` and registers it.
 
@@ -478,6 +581,8 @@ def register_feature(
     target : FeatureRegistry | None, optional
         Registry to register into; defaults to the module-level
         :data:`registry` singleton.
+    intent, axis, flavour, width_rule, invertible, streaming, cost_hint
+        Optional shape-algebra fields, forwarded to :class:`FeatureSpec`.
 
     Returns
     -------
@@ -500,6 +605,13 @@ def register_feature(
             source=source,
             license=license,
             backend_fn=fn,
+            intent=intent,
+            axis=axis,
+            flavour=flavour,
+            width_rule=width_rule,
+            invertible=invertible,
+            streaming=streaming,
+            cost_hint=cost_hint,
         )
         reg.register(spec)
         return fn

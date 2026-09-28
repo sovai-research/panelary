@@ -512,12 +512,19 @@ def features(
     entity: str | None = None,
     time: str | None = None,
     **kwargs: Any,
-) -> pl.DataFrame | pl.LazyFrame:
+) -> pl.DataFrame | pl.LazyFrame | PanelFrame:
     """Compute the registered ``ts`` scalar features, one row per entity.
 
     Thin facade over :func:`panelary.feature_extractors.extract_features`: a
     tsfresh-style bulk extractor that runs a single lazy
     ``group_by(entity).agg(...)``.
+
+    Two ``method`` values instead **lift** each value column into a strictly
+    trailing basis, one output row per input row (see :mod:`panelary.shape`):
+    ``"delay"`` (:class:`~panelary.shape.Delay`, a delay / Hankel embedding --
+    ``lags=``, ``dilation=``) and ``"spectral"``
+    (:class:`~panelary.shape.Spectral` -- ``window=``, ``k=``, ``mode=``,
+    default ``mode="band"``).
 
     Parameters
     ----------
@@ -527,7 +534,8 @@ def features(
         Which registered ``ts`` features to compute. ``"all"`` is every
         registered scalar aggregation; otherwise pass an explicit list of
         feature names (e.g. ``["mean_abs_change", "absolute_energy"]``).
-        Forwarded as ``features=``.
+        Forwarded as ``features=``. ``"delay"`` / ``"spectral"`` select the
+        trailing shape lifts described above instead.
     columns : str or sequence of str, optional
         Value column(s) to featurise (forwarded as ``column=``). Defaults to
         every numeric column that is neither the entity nor the time key. With
@@ -536,13 +544,17 @@ def features(
     entity, time : str, optional
         Panel keys; used only when ``data`` is a bare polars frame.
     **kwargs
-        Forwarded to :func:`~panelary.feature_extractors.extract_features`.
+        Forwarded to :func:`~panelary.feature_extractors.extract_features`,
+        or to the :class:`~panelary.shape.Delay` /
+        :class:`~panelary.shape.Spectral` constructor.
 
     Returns
     -------
-    polars.DataFrame | polars.LazyFrame
+    polars.DataFrame | polars.LazyFrame | PanelFrame
         One row per entity. Lazy in, lazy out; a ``PanelFrame`` yields a
-        ``LazyFrame`` (it wraps one).
+        ``LazyFrame`` (it wraps one). For ``"delay"`` / ``"spectral"``: a
+        :class:`~panelary.core.panel_frame.PanelFrame` with the keys plus the
+        lifted columns, one row per input row.
 
     Raises
     ------
@@ -559,6 +571,11 @@ def features(
     training window. For a per-row, strictly causal feature use the ``ts`` /
     ``panel`` expression namespaces (``pl.col("px").ts.<feature>()`` under
     ``.over(entity)``), not this verb.
+
+    ``method="delay"`` and ``method="spectral"`` are the exception: they are
+    point-in-time by construction -- row ``t`` reads only its own entity's
+    trailing ``window`` (or ``(lags - 1) * dilation + 1``) observations, nothing
+    is fitted, and the output is bit-identical under truncation of the panel.
 
     Examples
     --------
@@ -582,6 +599,18 @@ def features(
     """
     from panelary.core.panel_frame import PanelFrame
     from panelary.feature_extractors import extract_features
+
+    if isinstance(method, str) and method in ("delay", "spectral"):
+        # The trailing LIFT direction of the shape algebra (panelary.shape).
+        import panelary.shape as shape
+
+        lift: Any
+        if method == "delay":
+            lift = shape.Delay(columns=_as_list(columns), **kwargs)
+        else:
+            kwargs.setdefault("mode", "band")
+            lift = shape.Spectral(columns=_as_list(columns), **kwargs)
+        return lift.fit_transform(data, entity=entity, time=time)
 
     if isinstance(data, PanelFrame):
         frame: pl.DataFrame | pl.LazyFrame = data.lazy()
@@ -1155,6 +1184,15 @@ def reduce(
         (higher-order cumulant factors -- weak or masked **non-Gaussian**
         factors, ``order=3|4``), ``"ica"`` (maximally independent components,
         needs scikit-learn), ``"robust_pca"`` (heavy tails / contaminated rows).
+
+        Shape-algebra compressors (:mod:`panelary.shape`, pure numpy, no
+        scikit-learn): ``"rsvd"`` (randomized PCA), ``"sparse_rp"`` / ``"srht"``
+        (seeded, data-independent projections), ``"id"`` (``ColumnSubset``:
+        ``n_components`` of your *real* columns, by interpolative
+        decomposition), ``"cur"`` (the same columns, plus CUR factors); and
+        along time, ``"paa"`` (piecewise aggregate approximation, ``n_components``
+        segments) and ``"spectral"`` (``n_components`` lowest DFT magnitudes),
+        both of which need ``window=``.
     columns : str or sequence of str, optional
         Feature columns to reduce. Defaults to every numeric feature column.
         Forwarded as ``columns=`` (reducers) or ``features=`` (extractors).
@@ -1200,6 +1238,15 @@ def reduce(
     Inside CV, build the estimator (e.g.
     :class:`~panelary.reduce.PanelPCA`, :class:`~panelary.reduce.HFAFactors`)
     and let the :class:`~panelary.core.pipeline.Pipeline` refit it per fold.
+
+    The time-axis methods (``"paa"``, ``"spectral"``) take ``window=`` and are
+    strictly trailing: row ``t`` reads only its own entity's last ``window``
+    observations and nothing is fitted, so they are point-in-time however they
+    are called. Passing ``flavour="whole_series"`` moves the call into the
+    fit-on-what-you-pass regime -- one row per entity, summarising its whole
+    history, ``leakage_safe=False`` -- for describing a fixed sample only.
+    ``"sparse_rp"`` / ``"srht"`` learn nothing from the data at all (the
+    projection is a function of the width and ``seed=``).
 
     Examples
     --------
@@ -1252,6 +1299,27 @@ def reduce(
             **kwargs,
         )
         return extractor.fit_transform(data)
+
+    # Shape-algebra compressors: method -> (class name, the width parameter
+    # `n_components` maps onto). Imported lazily; `panelary.shape` loads no
+    # transform module until one is used.
+    shape_methods = {
+        "rsvd": ("RandomizedPCA", "n_components"),
+        "sparse_rp": ("SparseRandomProjection", "n_components"),
+        "srht": ("SRHT", "n_components"),
+        "id": ("ColumnSubset", "k"),
+        "cur": ("CUR", "k"),
+        "paa": ("PAA", "segments"),
+        "spectral": ("Spectral", "k"),
+    }
+    if method in shape_methods:
+        import panelary.shape as shape
+
+        cls_name, width_param = shape_methods[method]
+        if n_components is not None:
+            kwargs[width_param] = n_components
+        transform = getattr(shape, cls_name)(columns=cols, **kwargs)
+        return transform.fit_transform(data, entity=entity, time=time)
 
     return reduce_features(
         data,
