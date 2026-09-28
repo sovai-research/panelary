@@ -24,7 +24,7 @@ formulae**, written against permissively licensed references only:
 
 No code was copied from any of the "all rights reserved" alpha-mining
 repositories or from any GPL/AGPL symbolic-regression package; see the
-licence-discipline section of ``plans/todo/evolve-build-contract.md``.
+licence-discipline section of ``plans/done/evolve-build-contract.md``.
 :mod:`panelary.catch22` is the clean-room precedent this module follows.
 
 The four rules every operator here obeys

@@ -13,7 +13,7 @@ Project URLs:
 
 - Project/brand name: Panelary. PyPI distribution and Python import name: `panelary` (one name, no alias). The conventional import is `import panelary as pn`. The pre-0.4.0 names `polars_features` and `PanelKit` are retired and no longer resolve.
 - Requires Python >= 3.10. Mandatory dependencies are only `numpy` and `polars>=1.0.0`; everything heavier is an optional extra.
-- Install: `pip install panelary`, or `pip install "panelary[recommended]"` for the batteries-included set (`ml`, `scipy`, `seasonality`, `cafe`), or `[all]` for every real feature extra. There are 21 extras: `ml`, `scipy`, `progress`, `seasonality`, `forecasting`, `automl`, `lightgbm`, `catboost`, `xgboost`, `ann`, `fast`, `llm`, `gpu`, `viz`, `cafe`, `dimreduce`, `explain`, the bundles `recommended` and `all`, and the toolchains `docs` and `dev`.
+- Install: `pip install panelary`, or `pip install "panelary[recommended]"` for the batteries-included set (`ml`, `scipy`, `seasonality`, `cafe`), or `[all]` for every real feature extra. There are 23 extras: `ml`, `scipy`, `progress`, `seasonality`, `forecasting`, `automl`, `lightgbm`, `catboost`, `xgboost`, `ann`, `fast`, `llm`, `gpu`, `viz`, `cafe`, `dimreduce`, `explain`, `schema`, `fuzzy`, the bundles `recommended` and `all`, and the toolchains `docs` and `dev`.
 - A missing optional dependency raises an actionable error naming the extra to install (via `panelary._internal._deps.require`), never a bare ImportError.
 
 ## The golden path
@@ -36,7 +36,8 @@ Each workflow stage has one top-level verb on the `pn` namespace, fronting the s
 - leakage_safe contract: cross-sectional operations are per-date (`.over(time_col)`), and anything with a `fit` step is fit per fold on training data only — never globally, never on the test fold.
 - Prefix invariance: `f(x[:T])[t] == f(x[:T+k])[t]` for `t <= T`. No window size, threshold, lag order or normalisation constant may depend on total series length.
 - Leak-safe Pipeline: sklearn-style `fit`/`transform` pipeline where scalers and selectors are fit per fold.
-- Purged cross-validation: `PurgedKFold` and `CombinatorialPurgedCV` (CPCV) apply purging and embargo to remove train/test leakage around fold boundaries.
+- Purged cross-validation: `PurgedKFold` and `CombinatorialPurgedCV` (CPCV) apply purging and embargo to remove train/test leakage around fold boundaries. `embargo` / `horizon` take integers (time steps) or calendar durations (`"5d"`, `"1mo"`, `timedelta`, business days `"5bd"` / `BusinessDays`).
+- Point-in-time join: `pn.asof_join` (also `PanelFrame.asof_join`) is bitemporal — each row `(entity, t)` sees a vintage only once `knowledge_time + lag <= t`.
 - Expression namespaces: operators are called as `pl.col(...).<namespace>.<name>(...)` across the `panel`, `xs`, `ts` and `factor` namespaces. `.panel` implies `.over(entity)`; `.xs` implies `.over(time)`. Typed `.pyi` stubs ship in the wheel.
 - Operator registry: `pn.registry` holds a `FeatureSpec` per operator recording signature, input/output shape, tier, `panel_safe`/`leakage_safe` flags, and provenance/license. `registry.to_records()` serialises it, `registry.to_llms_txt()` renders a machine-readable operator catalogue, and `registry.audit()` checks that every operator is permissively licensed. 56 operators are registered today (`ts`=42, `xs`=7, `factor`=4, `panel`=3).
 
@@ -59,7 +60,13 @@ Each workflow stage has one top-level verb on the `pn` namespace, fronting the s
 - `pn.catch22`, `pn.feature_extractors`, `pn.extract_features` — time-series feature extraction, including a clean-room catch22 reimplementation.
 - `pn.imputation` / `pn.CafeImputer` — leak-safe imputation.
 - `pn.llm` — optional LLM-assisted analysis of panels.
-- `pn.leakage` — the point-in-time compiler (`causalize`, `audit`) and the borrowed-accuracy metric with exact Shapley attribution.
+- `pn.leakage` — the point-in-time compiler (`causalize`, `audit`, `audit_features` for a whole feature set) and the borrowed-accuracy metric: an executed do-Shapley decomposition, per-seed replicates, opt-in permutation sampling beyond 12 components. Results serialise with a byte-deterministic `to_json()`.
+- `pn.select.refit_shapley` — Shapley value of feature groups or data sources, by refitting through a purged splitter.
+- `pn.quality` — data validation before anything is fitted: panel invariants, column contracts, fitted-state provenance, near-duplicate straddle checks (`PanelValidator`, `validate_panel`, `quality_report`; also `df.panel.validate()`).
+- `pn.clean` — point-in-time dedup (exact / MinHash / SimHash; a row goes only if it copies an earlier one), split-aware CV helpers, canonicalisation, survivorship, train-fitted outlier cleaning, entity resolution (also `df.panel.dedup()`).
+- `pn.synth` — seeded synthetic panels with planted ground truth (`generate_panel`, `SynthConfig`, `sample_config`), bitemporal vintages, and `check_planted_lag`, a leak detector keyed to the planted signal's known lag.
+- `pn.shape` — shape algebra: compress / lift / factorize / sketch a named axis; trailing time-axis transforms by default (PAA, Spectral, Delay), numpy randomized PCA, seeded sparse/SRHT projections, real-column ID/CUR, partial Tucker; `explain()` and `plan()` budgets. Also via `pn.reduce(method="rsvd"|...)` and `pn.features(method="delay"|"spectral")`.
+- `pn.embed` — leak-safe numerical embeddings from trailing windows: `QuantEmbedder`, `RandIntC22`, `HydraEmbedder`, `RandomFourierFeatures`, `TensorSketch` (stateless, `fit_is_empty` enforced), `CausalMiniRocket` (prefix-safe MiniRocket-PPV), `CrossRocket` (random operators across the cross-section), `EmbeddingCompressor`, `PreValidatedRidge`, `CrossSectionalEmbedder`; `pn.catch22.catch22_batch` for vectorised catch22.
 - `pn.assert_no_lookahead`, `pn.testing` — the leakage verifier and test helpers.
 
 ## Docs

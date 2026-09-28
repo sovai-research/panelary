@@ -43,6 +43,7 @@ def _warn_unavailable(component: str, exc: Exception) -> None:
 # --- Panelary core (leak-safe panel ML kernel) ------------------------------
 try:
     from panelary.core import (
+        BusinessDays,
         CombinatorialPurgedCV,
         PanelEstimator,
         PanelFrame,
@@ -50,6 +51,7 @@ try:
         Pipeline,
         PurgedKFold,
         as_panel,
+        asof_join,
         deflated_sharpe_ratio,
         expanding_window_split,
         probability_of_backtest_overfitting,
@@ -59,6 +61,7 @@ except ImportError as exc:
     _warn_unavailable("panelary.core", exc)
 else:
     __all__ += [
+        "BusinessDays",
         "CombinatorialPurgedCV",
         "PanelEstimator",
         "PanelFrame",
@@ -66,6 +69,7 @@ else:
         "Pipeline",
         "PurgedKFold",
         "as_panel",
+        "asof_join",
         "deflated_sharpe_ratio",
         "expanding_window_split",
         "probability_of_backtest_overfitting",
@@ -259,6 +263,54 @@ except ImportError as exc:
     _warn_unavailable("panelary.leakage", exc)
 else:
     __all__ += ["leakage"]
+
+# --- Data validation: panel invariants, contracts, leak-safety --------------
+# numpy + polars only, so it is eager like `leakage` above. `quality`, not
+# `validation`: that name is the statistical layer (CPCV, DSR, bootstrap).
+try:
+    from panelary import quality as quality
+except ImportError as exc:
+    _warn_unavailable("panelary.quality", exc)
+else:
+    __all__ += ["quality"]
+
+# --- Data cleaning: dedup, canonicalisation, outliers, entity resolution ----
+# numpy + polars only (rapidfuzz is imported lazily), so eager like `quality`.
+try:
+    from panelary import clean as clean
+except ImportError as exc:
+    _warn_unavailable("panelary.clean", exc)
+else:
+    __all__ += ["clean"]
+
+# --- Synthetic panels with planted ground truth -----------------------------
+# numpy + polars only, so it is eager like `leakage` above.
+try:
+    from panelary import synth as synth
+except ImportError as exc:
+    _warn_unavailable("panelary.synth", exc)
+else:
+    __all__ += ["synth"]
+
+# --- Shape algebra: compress / lift / factorize / sketch a named axis --------
+# The subpackage init is lazy: no transform module loads until a public name is
+# first read, so this costs only the init (and `_tensor`, which `cluster` already
+# needs).
+try:
+    from panelary import shape as shape
+except ImportError as exc:
+    _warn_unavailable("panelary.shape", exc)
+else:
+    __all__ += ["shape"]
+
+# --- Leak-safe numerical embeddings (QUANT, RandIntC22, Hydra, MiniRocket) ----
+# numpy + polars only; the shape primitives it composes load on first use.
+try:
+    from panelary import embed as embed
+except ImportError as exc:
+    _warn_unavailable("panelary.embed", exc)
+else:
+    __all__ += ["embed"]
 
 # --- Remaining light-core modules -------------------------------------------
 # These cost ~0-10 ms on top of the base import and pull no optional

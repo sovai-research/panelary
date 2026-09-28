@@ -55,12 +55,15 @@ with Polars (idempotently) and registers each operator as a
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import polars as pl
 
 from panelary._internal._ffd import DEFAULT_THRESHOLD, frac_diff_expr
 from panelary.registry import FeatureSpec, registry
+
+if TYPE_CHECKING:  # annotations only: the quality layer is imported lazily
+    from panelary.quality import QualityReport, ValidationReport
 
 __all__ = [
     "PanelExprNamespace",
@@ -434,6 +437,108 @@ class _PanelFrameNamespace:
             suffix=suffix,
             op="rs_vol",
         )
+
+    # ------------------------------------------------------------------ #
+    # Data validation (panelary.quality). Imported lazily inside each method
+    # so this Tier-1 module keeps its import boundary: nothing from the
+    # estimator layer loads until one of these is actually called.
+    # ------------------------------------------------------------------ #
+    def validate(
+        self,
+        *,
+        entity: str | None = None,
+        time: str | None = None,
+        **kwargs: Any,
+    ) -> ValidationReport:
+        """Validate this frame as a panel: invariants, contracts, leak-safety.
+
+        Thin front for :func:`panelary.quality.validate_panel` -- unique
+        ``(entity, time)`` keys, per-entity time order, gaps, history and
+        coverage, optional column contracts, and (given ``split=``) the
+        leak-safety checks. A LazyFrame is collected once.
+
+        Parameters
+        ----------
+        entity, time : str, optional
+            Panel keys. Default: column 0 is the entity, column 1 the time.
+        **kwargs
+            Forwarded to :func:`panelary.quality.validate_panel` (``schema``,
+            ``min_obs``, ``frequency``, ``impact``, ``split``, ``fitted``,
+            ``raise_on_fail``, ...).
+
+        Returns
+        -------
+        panelary.quality.ValidationReport
+
+        Raises
+        ------
+        panelary.quality.PanelValidationError
+            If a check with ``impact="fail"`` failed and ``raise_on_fail`` is
+            True (the default).
+        """
+        from panelary.quality import validate_panel
+
+        return validate_panel(self._frame, entity=entity, time=time, **kwargs)
+
+    def quality_report(
+        self,
+        *,
+        entity: str | None = None,
+        time: str | None = None,
+        **kwargs: Any,
+    ) -> QualityReport:
+        """Profile this frame: null %, duplicate %, constant columns, dtype drift.
+
+        Thin front for :func:`panelary.quality.quality_report`. With
+        ``entity`` and ``time`` the profile is panel-aware (duplicate keys,
+        entities per time, constancy within each entity); without them it is
+        frame-level only.
+
+        Parameters
+        ----------
+        entity, time : str, optional
+            Panel keys (both or neither).
+        **kwargs
+            Forwarded to :func:`panelary.quality.quality_report`
+            (``reference``, ``columns``, ``max_null_pct``, ``max_examples``).
+
+        Returns
+        -------
+        panelary.quality.QualityReport
+        """
+        from panelary.quality import quality_report
+
+        return quality_report(self._frame, entity=entity, time=time, **kwargs)
+
+    # ------------------------------------------------------------------ #
+    # Data cleaning (panelary.clean). Imported lazily, like the quality
+    # methods above.
+    # ------------------------------------------------------------------ #
+    def dedup(
+        self,
+        *,
+        entity: str | None = None,
+        time: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Remove (or flag) exact and near-duplicate rows.
+
+        Thin front for :func:`panelary.clean.dedup`: panel-global and
+        point-in-time by default -- a row is dropped only if it copies an
+        *earlier* row, so no near-duplicate pair can straddle a split built
+        afterwards. The result has the same container type as the frame.
+
+        Parameters
+        ----------
+        entity, time : str, optional
+            Panel keys. Default: column 0 is the entity, column 1 the time.
+        **kwargs
+            Any :class:`panelary.clean.Deduplicator` parameter (``method``,
+            ``threshold``, ``columns``, ``action``, ...).
+        """
+        from panelary.clean import dedup as _dedup
+
+        return _dedup(self._frame, entity=entity, time=time, **kwargs)
 
 
 class PanelLazyFrameNamespace(_PanelFrameNamespace):

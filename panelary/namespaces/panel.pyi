@@ -14,7 +14,11 @@ for the stubs to be discovered.
 
 from __future__ import annotations
 
+from typing import Any
+
 import polars as pl
+
+from panelary.quality import QualityReport, ValidationReport
 
 __all__ = [
     "PanelExprNamespace",
@@ -56,6 +60,27 @@ class PanelLazyFrameNamespace:
         over: str | None = ...,
         alias: str | None = ...,
     ) -> pl.LazyFrame: ...
+    def validate(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
+    ) -> ValidationReport: ...
+    def quality_report(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
+    ) -> QualityReport: ...
+    def dedup(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
+    ) -> pl.LazyFrame: ...
 
 class PanelDataFrameNamespace:
     def __init__(self, df: pl.DataFrame) -> None: ...
@@ -83,6 +108,27 @@ class PanelDataFrameNamespace:
         window: int,
         over: str | None = ...,
         alias: str | None = ...,
+    ) -> pl.DataFrame: ...
+    def validate(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
+    ) -> ValidationReport: ...
+    def quality_report(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
+    ) -> QualityReport: ...
+    def dedup(
+        self,
+        *,
+        entity: str | None = ...,
+        time: str | None = ...,
+        **kwargs: Any,
     ) -> pl.DataFrame: ...
 
 def register() -> None: ...

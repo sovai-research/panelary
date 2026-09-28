@@ -1,5 +1,10 @@
 # `panelary/evolve/` — build contract
 
+> **Status: implemented** (moved to `plans/done/` 2026-09-28). Every interface below exists in
+> `panelary/evolve/` (`_ops`, `_compile`, `_select`, `_genome`, `_fitness`, `_honest`, plus the
+> orchestrator's `_search`), covered by `tests/test_evolve.py` and `tests/test_evolve_leakage.py`;
+> merged in `065a813` ("evolutionary alpha-factor mining").
+
 Evolutionary / genetic **alpha-factor mining** for panel data. Issued to the
 implementation agents 2026-09-09.
 

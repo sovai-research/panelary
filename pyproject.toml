@@ -116,6 +116,12 @@ dimreduce = ["umap-learn>=0.5"]
 # provides the sklearn/interventional fallback and `shapiq` the any-order
 # Shapley interaction indices. ---
 explain = ["shap>=0.44", "shapiq>=1.0"]
+# --- declarative schema backend for panelary.quality; the pure-Polars
+# validator is the default and needs nothing here. ---
+schema = ["dataframely"]
+# --- fast fuzzy string scoring for panelary.clean (EntityResolver); a numpy
+# edit-distance fallback is the default and needs nothing here. ---
+fuzzy = ["rapidfuzz>=3.0"]
 # Batteries-included bundle: the common heavy deps that reproduce the old
 # effective feature set (minus GPU / niche back-ends). Restores the pre-slim
 # experience for users who want `pip install` to "just work".
@@ -125,7 +131,7 @@ recommended = ["panelary[ml,scipy,seasonality,cafe]"]
 # deliberately left out; they are for working *on* Panelary, not with it.
 # Keep this list in sync when a feature extra is added.
 all = [
-  "panelary[ml,scipy,progress,seasonality,forecasting,automl,lightgbm,catboost,xgboost,ann,fast,llm,gpu,viz,cafe,dimreduce,explain]",
+  "panelary[ml,scipy,progress,seasonality,forecasting,automl,lightgbm,catboost,xgboost,ann,fast,llm,gpu,viz,cafe,dimreduce,explain,schema,fuzzy]",
 ]
 # Documentation toolchain (mkdocs-material site under docs/, config in
 # mkdocs.yml). Kept out of `dev` so test/lint CI stays lean; the docs workflow

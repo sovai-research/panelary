@@ -69,17 +69,24 @@ nav:
     - Panel ML Models: user-guide/models.md
     - Feature Attribution: user-guide/attribution.md
     - Latent Factors: user-guide/factors.md
+    - Shape Algebra: user-guide/shape.md
+    - Numerical Embeddings: user-guide/embeddings.md
     - Validation: user-guide/validation.md
     - Honest Validation: user-guide/honest-validation.md
     - Econometrics: user-guide/econometrics.md
     - Econometric Features: user-guide/econ-features.md
     - Preprocessing: user-guide/preprocessing.md
+    - Data Quality: user-guide/data-quality.md
+    - Data Cleaning: user-guide/cleaning.md
     - Forecasting: user-guide/forecasting.md
     - Seasonality: user-guide/seasonality.md
     - Feature Extraction (legacy): user-guide/feature-extraction.md
+    - Synthetic Panels: user-guide/synthetic-panels.md
   - Benchmarks:
     - Panelary vs pandas: benchmarks/vs_pandas.md
     - Borrowed accuracy: benchmarks/leakage-table.md
+    - Prefix-safe MiniRocket: benchmarks/prefix-safe-rocket.md
+    - CrossROCKET: benchmarks/cross-rocket.md
   - Roadmap: roadmap.md
   - Developer Guides:
     - Custom Forecasters and Transformers: developer-guide/develop.md
@@ -96,11 +103,15 @@ nav:
     - feature_extraction: api-reference/feature-extractors.md
     - catch22: api-reference/catch22.md
     - preprocessing: api-reference/preprocessing.md
+    - quality: api-reference/quality.md
+    - clean: api-reference/clean.md
     - imputation: api-reference/imputation.md
     - labeling: api-reference/labeling.md
     - factor: api-reference/factor.md
     - selection: api-reference/selection.md
     - reduce: api-reference/reduce.md
+    - shape: api-reference/shape.md
+    - embed: api-reference/embed.md
     - cluster: api-reference/cluster.md
     - models: api-reference/models.md
     - explain: api-reference/explain.md
@@ -111,6 +122,7 @@ nav:
     - econ.features: api-reference/econ-features.md
     - leakage (causalize): api-reference/leakage.md
     - leak verifiers: api-reference/testing.md
+    - synth: api-reference/synth.md
     - evaluation: api-reference/evaluation.md
     - metrics: api-reference/metrics.md
     - multi_objective: api-reference/multi-objective.md

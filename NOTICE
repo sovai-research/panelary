@@ -51,6 +51,16 @@ Panelary does NOT vendor, copy, or link the GPL-licensed `pycatch22`
 implementation. Any catch22 features shipped by Panelary are
 independently implemented from the paper and licensed under Apache-2.0.
 
+The QUANT (Dempster, Schmidt & Webb, 2023, arXiv:2308.00928), Hydra (Dempster,
+Schmidt & Webb, 2023, Data Mining and Knowledge Discovery) and MiniRocket
+(Dempster, Schmidt & Webb, 2021, KDD) transforms in `panelary.embed` are
+clean-room reimplementations from the published descriptions. Panelary does NOT
+vendor, copy, or link the GPL-3.0 reference implementations, and their
+implementers did not read them or the aeon / sktime / wildboar ports. The causal
+MiniRocket (`CausalMiniRocket`) also departs from the paper deliberately (causal
+alignment, trailing pooling, row-subsample biases). All are licensed under
+Apache-2.0.
+
 ------------------------------------------------------------------------
 License
 ------------------------------------------------------------------------

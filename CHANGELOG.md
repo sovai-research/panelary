@@ -180,7 +180,145 @@ answers a question that has no boolean answer — *safe evaluated how?*
   and `null` when computed on all 200 — the same row of the same series, reverting
   to null because rows arrived after it. That is a deliberate design decision in
   tension with hard invariant 1, not a typo, so it is written up for an owner in
-  `plans/todo/fracdiff-warmup-decision.md` rather than silently changed here.
+  `plans/done/fracdiff-warmup-decision.md` rather than silently changed here.
+
+### Added — point-in-time evidence: an as-of join, calendar embargo, serialisable audits
+
+The four things `AGENTS.md` names as what the assessment engine needs first.
+
+- **`asof_join`** (`panelary.core.asof`, also `PanelFrame.asof_join` and `pn.asof_join`)
+  — the bitemporal join, and the package's first bitemporal concept. Each row
+  `(entity, t)` gets the newest period *as it was known at t*: vintages with
+  `knowledge_time + lag <= t` and `event_time <= t`. A restatement is invisible before
+  it was published and never displaces a newer period. Order-independent, keeps the
+  caller's row order, and fails closed on null keys, conflicting duplicate vintages and
+  Date/Datetime or time-zone mismatches.
+- **Calendar embargo and purge.** `PurgedKFold`, `CombinatorialPurgedCV` and the
+  positional splitters in `validation` take `embargo` / `horizon` as a `timedelta`, a
+  Polars duration (`"5d"`, `"1mo"`) or business days (`"5bd"`, `BusinessDays(5,
+  holidays=...)`), applied to the real time values. Integer specs give byte-identical
+  folds, checked against a frozen copy of the old algorithm.
+- **`leakage.audit_features`** sweeps a named feature set in one call and returns a
+  `FeatureSetAudit`. `to_dict()` / `to_json()` on `CompileResult`, `Finding`,
+  `FeatureSetAudit`, `PipelineAudit` and `StepAudit` are byte-deterministic across
+  processes and hash seeds and carry `schema` and `produced_by`, so a finding can become
+  report evidence without a translation layer.
+
+### Added — do-Shapley: seeds, sampling, and refit Shapley for feature groups
+
+`borrowed_accuracy` is now named for what it is: an interventional (do-)Shapley value
+whose coalitions are executed, not estimated (Jung et al., ICML 2022).
+
+- **Replicates.** `evaluate` may return one score per seed; each seed is solved exactly,
+  the headline is the mean (so it still sums to the total), and the report adds the
+  median and range per stage. The leakage table's Shapley section now covers nine seeds
+  instead of one — and the single seed it used to publish was the *lowest* of the nine.
+- **`method="permutation"`** lifts the 12-component limit, opt-in only: antithetic
+  pairs, at most `M(k−1)+2` evaluations, efficiency kept, a standard error per stage.
+  "Group your components" is still the first suggestion in the refusal.
+- **`select.refit_shapley`** values feature groups or data sources by refitting through
+  a purged splitter, with common random numbers across coalitions. Redundant groups
+  split their credit instead of both scoring zero; seeds, a per-fold breakdown and
+  `base_features` are supported.
+- `BorrowedAccuracyReport` and `RefitShapleyReport` gain `to_dict()` / `to_json()`.
+
+### Added — `quality`: the panel checks every operation already assumed
+
+`panelary.quality` is the data-integrity gate that runs before anything is fitted
+(distinct from `validation`, the statistical layer). `PanelValidator` /
+`validate_panel` check unique `(entity, time)`, per-entity time order (measured with
+`PanelFrame.is_sorted_per_entity`, never trusted), gaps against the panel's own
+calendar, history and coverage, and `ColumnContract`s. It also asks two questions no
+schema library does: does a fitted transform's state derive only from train rows
+(fit-panel provenance plus a counterfactual refit), and does a near-duplicate cluster
+straddle the split? Rows split dataframely-style into `valid` / `invalid`; impacts are
+fail / warn / off. `quality_report` profiles null %, duplicate %, constant columns and
+dtype drift. Every result has a byte-deterministic `to_json()` and `to_evidence()`.
+Also reachable as `df.panel.validate()` / `df.panel.quality_report()`. Pure NumPy +
+Polars; `dataframely` is an optional `schema` extra.
+
+### Added — `clean`: dedup before the split, and cleaning that learns only from train
+
+`panelary.clean` is the input-integrity stage. `Deduplicator` removes exact and
+near-duplicate rows (MinHash, C-MinHash, SimHash; LSH plus exact verification)
+panel-globally and point-in-time: a row goes only if it copies an *earlier* row, so no
+near-duplicate pair can straddle a split built afterwards. (The plan's "one canonical
+row per connected component" was not adopted: a later row can bridge two earlier
+clusters and change which survive, which is a look-ahead.) `SplitAwareCV`,
+`purge_near_duplicates` and `assert_no_straddle` enforce the same guarantee per fold.
+`Canonicalizer` normalises strings and learns canonical spellings from train only;
+`Survivorship` / `golden_records` merge clusters; `OutlierCleaner` fits MAD / IQR / z /
+quantile bounds on train and runs causal Hampel and rolling filters; `EntityResolver`
+maps vendor ids onto one entity and never merges ids first seen at transform. Also
+reachable as `df.panel.dedup()`. Pure NumPy + Polars; `rapidfuzz` is an optional
+`fuzzy` extra. `preprocessing.reindex(drop_duplicates=True)` now routes through it,
+with unchanged output.
+
+### Added — `shape`: a shape algebra whose axis is the leak contract
+
+Transforms declare an intent (compress / lift / factorize / sketch) and an axis
+(feature / time / entity); the axis decides `panel_safe` / `leakage_safe`, and
+`ShapeTransform` refuses a class whose declaration contradicts it. Time-axis transforms
+(`PAA`, `Spectral`, `Delay`) are trailing by default and bit-identical under truncation;
+`flavour="whole_series"` is an explicit opt-in keyed by entity and `leakage_safe=False`,
+and stays out of the registry. Pure numpy: `RandomizedPCA`, `SparseRandomProjection`,
+`SRHT`, `CountSketch`, `FrequentDirections`, `ColumnSubset` / `CUR` (real columns),
+`PartialTucker`, and a date-to-date Procrustes-aligned `CrossSectionalRandomizedPCA`.
+Every fitted transform has `explain()`; `plan()` refuses an oversized step before it
+allocates. Reachable via `pn.reduce(method="rsvd"|"sparse_rp"|"srht"|"id"|"cur"|"paa"|
+"spectral")` and `pn.features(method="delay"|"spectral")`; `PanelPCA` / `PanelSVD` gain
+`backend="numpy"` (the default stays sklearn, whose `"auto"` solver is still the fastest
+on tall panels) and `PanelRandomProjection` gains `method="sparse"|"srht"`.
+`build_tensor` moved to `panelary.shape` (still importable from `cluster`). Wave 1 of the
+build contract; Wave 2 (DWT, incremental PCA, SSA, DMD, STFT) is not yet built.
+
+### Added — `embed`: leak-safe numerical embeddings for panels
+
+One fixed-width vector per (entity, date), from strictly trailing windows or per-date
+cross-sections; pure NumPy + Polars. `QuantEmbedder`, `RandIntC22` (catch24 over random
+intervals), `HydraEmbedder` and `TensorSketch` carry no fitted state — `fit_is_empty =
+True` is enforced (fitting on disjoint data must give byte-identical state), not
+documented. `RandomFourierFeatures` always keeps direct links and uses a past-only
+bandwidth; `EmbeddingCompressor` (`srp|pca|svd|none`) dispatches to `panelary.shape`
+rather than reimplementing it; `PreValidatedRidge` refuses `alpha=0` and warns when
+P > T; `CrossSectionalEmbedder` refuses to emit unaligned per-date components (`align=`
+is required). Guardrails: `reversal_check`, `mechanical_baseline`, `naive_baselines`,
+`null_panel`, `baseline_report`. Outputs are `pl.Array(Float32)`; state serialises to
+`.npz` without pickle. Every leak and prefix test pairs the transform with a
+deliberately leaky variant that must fail it. Accuracy benchmarks (probe AUROC, k-NN
+recall, transfer) are not yet measured.
+
+- **`catch22_batch`** — the 22 catch22 features over an `(n_windows, L)` array in one
+  vectorised pass: ~11,500 windows/s at L=128 against ~240 for the scalar path (the plan's
+  "10.2" was stale). The scalar functions now wrap it. The ACF uses `re² + im²` instead of
+  `f * conj(f)`, whose rounding depended on a row's position in the batch, so continuous
+  features can differ from 0.5.0 in the last digit.
+- **`CausalMiniRocket`** — MiniRocket-PPV made point-in-time: 84 fixed kernels convolved
+  left-only, PPV/MPV as trailing or expanding means of a per-entity cumulative sum, ~500
+  permuted biases fitted only on the rows `fit` sees. On the S&P 500 panel, the exact
+  two-channel Shapley split of what the leaky form borrows puts nearly all of it in
+  whole-series pooling (median +0.120 rank IC) and almost none in bias fitting — the
+  reverse of the plan's guess. See `docs/benchmarks/prefix-safe-rocket.md`.
+- **`CrossRocket`** — a fixed, seeded bank of permutation-equivariant operators applied
+  across entities at each date (median-deviation and rank thresholds, value-defined
+  subsets, peer baskets from strictly trailing correlations); stateless and causal at each
+  date. Its benchmark reports the null plainly: on one year of S&P 500 data no fitted
+  design has a positive rank IC; on a planted peer-relative signal it matches handcrafted
+  features. See `docs/benchmarks/cross-rocket.md`.
+
+### Added — `synth`: seeded synthetic panels with planted ground truth
+
+The prior half of the PanelPFN plan, and the fixture the leakage suites hand-roll.
+`generate_panel(config, seed=...)` draws a long panel whose messy properties are all
+dials — regime-switching factors with stochastic volatility, Student-t shocks, clusters,
+entry and exit, asynchronous schedules, informative missingness, reporting lags,
+revisions, structural breaks — and returns it revised, as first observed, and as
+bitemporal `vintages` (`entity`, `event_time`, `knowledge_time`, `value`), the shape
+`asof_join` consumes. `GroundTruth` plants one signal with a known lag and coefficient;
+`check_planted_lag` flags a feature that carries it earlier than a causal one could
+(`shift(-1)` caught, `shift(1)` passes). Byte-identical per seed on a given platform
+and prefix-consistent in `T` and `N`. CAFE turned out to be an imputer, not a sampler,
+so none of it is reused.
 
 ### Fixed
 
@@ -241,6 +379,13 @@ answers a question that has no boolean answer — *safe evaluated how?*
   identical, is now shared via `_walk_forward_cutoffs`.
 
 ### Changed
+
+- **`frac_diff`'s warm-up is prefix-invariant.** A row is null iff it lacks a full
+  trailing window, so a series shorter than the kernel is now all-null. It used to
+  return one truncated-kernel value that turned back into `null` as the series grew —
+  the exact violation of hard invariant 1 that `assert_prefix_invariant` found (see
+  `plans/done/fracdiff-warmup-decision.md`). If you relied on that partial value, the
+  honest replacement is a shorter kernel (a larger `threshold`).
 
 - **`PanelFrame` now says something about row order instead of assuming it.**
   `panel_safe` reads "`.over(entity_col)` on a *time-sorted* panel", and the

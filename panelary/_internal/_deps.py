@@ -38,6 +38,8 @@ _MODULE_TO_EXTRA: dict[str, str] = {
     "numba": "fast",
     "shapiq": "explain",
     "shap": "explain",
+    "dataframely": "schema",
+    "rapidfuzz": "fuzzy",
 }
 
 #: PyPI distribution name (for the pip hint).

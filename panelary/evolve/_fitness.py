@@ -2,7 +2,7 @@
 
 This is the module Panelary exists for. Across the ~40 symbolic-regression / GP
 libraries and 9 alpha-mining repositories surveyed for
-``plans/todo/evolve-build-contract.md``, **zero** implement purging, embargo, or
+``plans/done/evolve-build-contract.md``, **zero** implement purging, embargo, or
 any overfitting control, and none are panel-aware. Everything here is about the
 two properties nobody else ships: *out-of-fold-by-construction* scoring, and an
 acceptance threshold calibrated against noise rather than against zero.
