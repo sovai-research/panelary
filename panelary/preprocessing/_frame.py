@@ -23,14 +23,21 @@ def reindex(drop_duplicates: bool = False):
     Parameters
     ---------
     drop_duplicates : bool
-        Defaults to False. If True, duplicates are dropped before reindexing.
+        Defaults to False. If True, duplicate entity and time values are dropped
+        before the cross join, via the exact path of :mod:`panelary.clean`
+        (:func:`panelary.clean.exact_unique`). For row-level (and near-)
+        deduplication use :class:`panelary.clean.Deduplicator`.
     """
 
     def transform(X: pl.LazyFrame) -> pl.LazyFrame:
         entity_col, time_col = X.columns[:2]
         if drop_duplicates:
-            entities = X.select(pl.col(entity_col).unique())
-            timestamps = X.select(pl.col(time_col).unique())
+            # Imported lazily: panelary.clean builds on preprocessing, not the
+            # other way round, so there is no import cycle at load time.
+            from panelary.clean._exact import exact_unique
+
+            entities = exact_unique(X.select(entity_col))
+            timestamps = exact_unique(X.select(time_col))
         else:
             entities = X.select(entity_col)
             timestamps = X.select(time_col)

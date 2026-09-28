@@ -1,10 +1,39 @@
 # Implementation Plan — Deduplication, Data Cleaning & Data Validation (the fifth pillar)
 
-**Status:** design / ready for pickup · **Owner:** TBD
+> **Status — quality/ (2026-09-28): M2 and M6 implemented; zero new mandatory dependencies.**
+> `panelary/quality/` exports `PanelValidator`, `validate_panel()`, `ColumnContract`, `check_fitted_state()`, `check_near_duplicate_straddle()`, `quality_report()`, and the result types `CheckResult` / `ValidationReport` / `QualityReport`.
+> **Panel invariants:** usable keys, null keys, unique `(entity, time)`, per-entity time order (measured via `PanelFrame.is_sorted_per_entity`, warned as `PanelOrderWarning`), gaps against the panel's own calendar or an explicit `frequency`, `min_obs`, `coverage`.
+> **Contracts:** dtype, nullability, NaN, unique, allowed values, range, named rules.
+> **§6 leak-safety invariants:** fitted-state provenance, checked two ways (the `_fit_panel` keys, plus a counterfactual refit on train compared against learned state); and near-duplicate straddle over `panelary.clean.near_duplicate_clusters`, against an `IndexSplit`, a `(train, test)` pair, a fold-label column or a list of folds, warned as `LeakageWarning`.
+> **Behaviour:** dataframely-style `valid` / `invalid` split with `__failed_checks__`; fail / warn / off impact levels; `PanelValidationError` carries the report.
+> **Serialisation:** deterministic `to_dict()` / `to_json()` / `to_evidence()`. The evidence output was checked against the engine's real `Evidence` model.
+> **M6:** `quality_report()` covers null %, NaN %, duplicate rows and keys, constant columns (global and within-entity), entities per time, and dtype drift against a reference. The optional `dataframely` backend takes a user `dy.Schema` or `backend="dataframely"`. The adapter is tested only against a stand-in module, because dataframely is not installed here; the real-library test is `importorskip`.
+> **Tier-1 surface:** `.panel.validate()` and `.panel.quality_report()` on DataFrame and LazyFrame, imported lazily.
+> **Tests:** `tests/test_quality_{panel,schema,leakage,report}.py`.
+> **Docs:** `docs/user-guide/data-quality.md`, `docs/api-reference/quality.md`.
+> **Deferred:**
+> - `PanelValidator` is deliberately not a `PanelTransformer`. Validation learns nothing (§5, step 1).
+> - The `panel.pyi` stub entries, the extras / `_MODULE_TO_EXTRA` entry for `schema`, and the top-level export are pending the orchestrator.
+
+> **Status — clean/ (2026-09-28): M1, M3, M4 and M5 implemented; zero new mandatory dependencies.**
+> **M1:** `Deduplicator` / `dedup` (exact, MinHash, C-MinHash, SimHash; LSH banding, exact verification, b-bit), `near_duplicate_clusters` / `near_duplicate_pairs`, and the split-aware `straddling_pairs`, `assert_no_straddle`, `straddling_clusters`, `purge_near_duplicates`, `SplitAwareCV`. `preprocessing.reindex(drop_duplicates=True)` now routes through `clean.exact_unique`, with unchanged behaviour.
+> **Design decision (refines §2 step 4):** connected-component dedup reads the future, because a later row can bridge two earlier clusters. The default therefore drops a row only if it near-duplicates an *earlier* row: pairwise, prefix-invariant, `leakage_safe`. `linkage="component"`, `keep="last"` and `survivorship=` set the instance's `leakage_safe = False`.
+> **M3:** `normalize_text`, `fingerprint`, `ngram_fingerprint`, `fingerprint_clusters`, and `Canonicalizer`, whose learned `vocab_` is fit on train only. `Survivorship` / `golden_records` (ten rules plus callables), wired into `Deduplicator(linkage="component", survivorship=...)`.
+> **M4:** `OutlierCleaner`: MAD / IQR / z-score / quantile bounds fit on train (per entity with a pooled fallback, pooled, or per-date cross-section), plus causal Hampel and rolling filters.
+> **M5:** `EntityResolver` / `resolve_entities` (exact-key, sorted-neighbourhood and `LSHBlocking` OR-blocking; weighted field comparison; union-find), and `string_similarity`, which uses `rapidfuzz` when installed and a NumPy / pure-Python fallback otherwise. At transform, ids unseen at fit are matched only against the training records and are never merged with each other.
+> **Plan correction (§4, M4):** `preprocessing.scale` (per-entity mean/std) and `preprocessing.trim` (time-range alignment) compute no robust statistic, so there is nothing to share with `OutlierCleaner`. Both are unchanged.
+> **Tests:** `tests/test_clean_{dedup,outliers,canonicalize,resolve}.py`. Every fitted state has a deliberately leaky variant that must fail. The datasketch oracle and rapidfuzz parity tests are `importorskip`.
+> **Docs:** `docs/user-guide/cleaning.md`, `docs/api-reference/clean.md`.
+> **Deferred:**
+> - The `splink` (`er`) backend, semantic dedup and suffix arrays (M7).
+> - §4's `_estimators.py` was not needed; each transformer lives beside its kernels.
+> - Pending the orchestrator: the `fuzzy` extra and `rapidfuzz → fuzzy` in `_MODULE_TO_EXTRA`. Until they land, `tests/test_dependency_drift.py::test_every_require_call_maps_to_a_declared_extra` flags `_strsim.py`. Also pending: the top-level `clean` export, `.panel.dedup()`, the mkdocs nav and the CHANGELOG.
+
+**Status:** implemented 2026-09-28 (M1–M6; M7 deferred) — see the two status blocks above
 **Author of plan:** research + design session, 2026-09-08 (5-agent sweep: 60+ repos/methods across Rust/Polars dedup, Python ER, dedup academia, Polars validation libs, cleaning frameworks)
 **Branch context:** `panelkit-roadmap-impl` (branch name predates the PanelKit → Panelary rename; left as-is)
 **Siblings (already implemented — in `plans/done/`):** [factor-extraction-plan.md](../done/factor-extraction-plan.md) · [shap-attribution-plan.md](../done/shap-attribution-plan.md) · [interactions-theme-plan.md](../done/interactions-theme-plan.md) · [econometric-integration-plan.md](../done/econometric-integration-plan.md)
-**This plan lives in `plans/todo/`** — not yet implemented; pick it up when ready.
+**This plan lives in `plans/done/`.** M7 (semantic dedup, Splink backend, suffix arrays) remains optional future work.
 
 ---
 
