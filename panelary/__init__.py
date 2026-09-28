@@ -303,15 +303,6 @@ except ImportError as exc:
 else:
     __all__ += ["shape"]
 
-# --- Leak-safe numerical embeddings (QUANT, RandIntC22, Hydra, MiniRocket) ----
-# numpy + polars only; the shape primitives it composes load on first use.
-try:
-    from panelary import embed as embed
-except ImportError as exc:
-    _warn_unavailable("panelary.embed", exc)
-else:
-    __all__ += ["embed"]
-
 # --- Remaining light-core modules -------------------------------------------
 # These cost ~0-10 ms on top of the base import and pull no optional
 # dependency (verified: sklearn/scipy/pandas/plotly stay out of sys.modules),
@@ -393,12 +384,15 @@ else:
 #:                above (measured: it took the cold import from 80 ms to 779 ms)
 #:   plotting     143 ms, pulls plotly
 #:   llm          raises outright unless the `llm` extra is installed
+#:   embed        ~5 ms, but it builds on `shape`'s windowing and projection
+#:                modules, and `import panelary` promises to load no shape
+#:                transform (tests/test_shape_leak_safety.py)
 #:
 #: They resolve on first attribute access via the PEP 562 hook below, so
 #: ``pn.forecasting`` works without making every ``import panelary``
 #: pay for it. They are deliberately absent from ``__all__`` so that
 #: ``from panelary import *`` cannot trigger a heavy or failing import.
-_LAZY_SUBMODULES = ("forecasting", "llm", "plotting", "backtesting")
+_LAZY_SUBMODULES = ("forecasting", "llm", "plotting", "backtesting", "embed")
 
 
 def __getattr__(name: str):
