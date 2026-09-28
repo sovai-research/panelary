@@ -122,8 +122,12 @@ def _jaro(s1: str, s2: str) -> float:
     if m == 0:
         return 0.0
     m2 = [s2[j] for j in range(l2) if used[j]]
-    half_transpositions = sum(x != y for x, y in zip(m1, m2, strict=True))
-    t = half_transpositions / 2.0
+    out_of_order = sum(x != y for x, y in zip(m1, m2, strict=True))
+    # Transpositions are counted whole (``out_of_order // 2``), as rapidfuzz,
+    # jellyfish and Apache Commons do. Halving an odd count to a fraction is the
+    # other reading of Jaro (1989); it disagrees with rapidfuzz on exactly those
+    # pairs, which would make `backend="auto"` depend on what is installed.
+    t = out_of_order // 2
     return (m / l1 + m / l2 + (m - t) / m) / 3.0
 
 

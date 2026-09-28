@@ -35,6 +35,7 @@ from panelary.core.pipeline import Pipeline, PipelineAudit
 from panelary.core.protocol import PanelTransformer
 from panelary.leakage._compile import audit, audit_features
 from panelary.leakage._types import (
+    POLARS_TREE_FORMAT_TESTED,
     Classification,
     CompileResult,
     FeatureSetAudit,
@@ -43,6 +44,17 @@ from panelary.leakage._types import (
     Verdict,
     canonical_json,
     render_expr,
+)
+
+_POLARS_MINOR = ".".join(pl.__version__.split(".")[:2])
+
+pytestmark = pytest.mark.skipif(
+    _POLARS_MINOR not in POLARS_TREE_FORMAT_TESTED,
+    reason=(
+        f"polars {pl.__version__}: the serialised expression format is not a "
+        "stable public API and the compiler reads it directly; it has only been "
+        f"checked against {', '.join(POLARS_TREE_FORMAT_TESTED)}."
+    ),
 )
 
 #: Polars pickles the callable inside ``map_batches`` / ``map_elements`` with

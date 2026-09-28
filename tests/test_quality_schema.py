@@ -184,7 +184,10 @@ def test_real_dataframely_schema():
     report = _run(schema=Prices)
     check = report.check("dataframely", "Prices")
     assert check.status == "fail"
-    assert report.invalid.select("id", "t").rows() == [("a", 2)]
+    # dataframely rejects NaN in a Float64 by default (`allow_nan=False`), so the
+    # NaN price at ("b", 2) fails as well as the null one at ("a", 2). The
+    # stand-in below models nullability only, which is why it sees one row.
+    assert report.invalid.select("id", "t").rows() == [("a", 2), ("b", 2)]
 
 
 def _fake_dataframely() -> types.ModuleType:
