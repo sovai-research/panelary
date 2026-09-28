@@ -111,6 +111,7 @@ def test_backtesting_imports_at_all() -> None:
     cycle meant ``import panelary.backtesting`` raised ImportError no
     matter how it was reached.
     """
+    pytest.importorskip("sklearn")  # backtesting -> forecasting needs the `ml` extra
     mod = importlib.import_module("panelary.backtesting")
     assert hasattr(mod, "backtest")
 

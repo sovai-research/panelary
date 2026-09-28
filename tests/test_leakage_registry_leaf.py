@@ -35,6 +35,7 @@ addition is paired with a test that it did not.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 from typing import Any
@@ -61,6 +62,14 @@ from panelary.leakage._rules import (
 from panelary.leakage._types import POLARS_TREE_FORMAT_TESTED, Context, Finding
 from panelary.registry import FeatureRegistry, FeatureSpec, registry
 from panelary.testing import assert_no_lookahead
+
+#: Polars pickles the callable inside ``map_batches`` / ``map_elements`` with
+#: ``cloudpickle`` when it serialises the expression tree. The bare-core install
+#: (numpy + polars only) does not have it, so these cases cannot run there.
+requires_cloudpickle = pytest.mark.skipif(
+    importlib.util.find_spec("cloudpickle") is None,
+    reason="serialising a Python UDF needs cloudpickle (absent in the bare-core install)",
+)
 
 _POLARS_MINOR = ".".join(pl.__version__.split(".")[:2])
 
@@ -163,6 +172,7 @@ def opaque(fn: Any = None) -> pl.Expr:
 # --------------------------------------------------------------------------- #
 # 1. The finding the whole design rests on
 # --------------------------------------------------------------------------- #
+@requires_cloudpickle
 def test_nothing_in_the_node_identifies_the_operator() -> None:
     """Two different UDFs are indistinguishable in every field a rule can read.
 
@@ -291,6 +301,7 @@ def test_a_real_window_scoped_operator_is_refused(window_name: str) -> None:
 # --------------------------------------------------------------------------- #
 # 3. The escape hatch, end to end
 # --------------------------------------------------------------------------- #
+@requires_cloudpickle
 def test_map_batches_is_still_refused_by_default() -> None:
     """The default has not moved: no declaration, no acceptance."""
     result = audit(opaque(), time="t", entity="e")
@@ -300,6 +311,7 @@ def test_map_batches_is_still_refused_by_default() -> None:
     assert refused_kinds(result) == {"AnonymousFunction"}
 
 
+@requires_cloudpickle
 def test_a_trusted_declaration_clears_the_opaque_node(rowwise_name: str) -> None:
     result = audit(opaque(), time="t", entity="e", trust=(rowwise_name,))
 
@@ -308,6 +320,7 @@ def test_a_trusted_declaration_clears_the_opaque_node(rowwise_name: str) -> None
     assert not result.refused
 
 
+@requires_cloudpickle
 def test_the_acceptance_is_recorded_not_silent(rowwise_name: str) -> None:
     """An audit that waves a node through must say that it did.
 
@@ -325,6 +338,7 @@ def test_the_acceptance_is_recorded_not_silent(rowwise_name: str) -> None:
     assert "did NOT verify" in trusted[0].reason
 
 
+@requires_cloudpickle
 def test_trust_clears_every_opaque_node_because_it_cannot_tell_them_apart(
     rowwise_name: str,
 ) -> None:
@@ -341,6 +355,7 @@ def test_trust_clears_every_opaque_node_because_it_cannot_tell_them_apart(
     assert [f.kind for f in result.findings] == ["AnonymousFunction"] * 2
 
 
+@requires_cloudpickle
 def test_causalize_returns_a_usable_expression_for_a_trusted_op(
     rowwise_name: str,
 ) -> None:
@@ -350,11 +365,13 @@ def test_causalize_returns_a_usable_expression_for_a_trusted_op(
     assert frame.select(compiled.alias("f"))["f"].to_list() == [2.0, 4.0, 6.0, 8.0]
 
 
+@requires_cloudpickle
 def test_causalize_still_refuses_without_the_declaration() -> None:
     with pytest.raises(LeakageRefused, match="AnonymousFunction"):
         causalize(opaque(), time="t", entity="e")
 
 
+@requires_cloudpickle
 def test_a_registered_panelary_operator_compiles(rowwise_name: str) -> None:
     """The regression the gap was about: Panelary refusing its own features.
 
@@ -406,6 +423,7 @@ def test_trust_does_not_clear_anything_but_the_opaque_node(
     assert audit(expr, trust=(rowwise_name,)).verdict is Verdict.REFUSED
 
 
+@requires_cloudpickle
 def test_a_leak_beside_a_trusted_node_is_still_caught(rowwise_name: str) -> None:
     """The trusted leaf clears itself, and only itself."""
     expr = (opaque() + pl.col("y").shift(-1)).alias("f")
@@ -426,6 +444,7 @@ def test_an_unknown_node_kind_is_refused_even_under_trust(rowwise_name: str) -> 
     assert [f.classification for f in findings] == [Classification.REFUSE]
 
 
+@requires_cloudpickle
 def test_a_plain_context_carries_no_trust() -> None:
     """The fail-closed default, at the one place it is read."""
     assert trusted_names(Context(time="t")) == frozenset()

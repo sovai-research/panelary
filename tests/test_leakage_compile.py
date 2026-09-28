@@ -24,6 +24,14 @@ import pytest
 from panelary.core.panel_frame import PanelFrame
 from panelary.leakage import _compile
 from panelary.leakage._compile import audit, causalize
+
+#: Polars pickles the callable inside ``map_batches`` / ``map_elements`` with
+#: ``cloudpickle`` when it serialises the expression tree. The bare-core install
+#: (numpy + polars only) does not have it, so these cases cannot run there.
+requires_cloudpickle = pytest.mark.skipif(
+    importlib.util.find_spec("cloudpickle") is None,
+    reason="serialising a Python UDF needs cloudpickle (absent in the bare-core install)",
+)
 from panelary.leakage._types import (
     Classification,
     Context,
@@ -382,6 +390,7 @@ def test_non_classification_return_is_refused() -> None:
     assert "Classification" in findings[0].reason
 
 
+@requires_cloudpickle
 def test_map_batches_is_refused(fixture_rules: dict[str, Rule]) -> None:
     result = audit(pl.col("x").map_batches(lambda s: s), time="t", entity="e")
 
@@ -391,6 +400,7 @@ def test_map_batches_is_refused(fixture_rules: dict[str, Rule]) -> None:
 
 
 @requires_rules
+@requires_cloudpickle
 def test_map_batches_is_refused_by_a_named_rule() -> None:
     """The real table refuses the opaque node explicitly, not by omission."""
     result = audit(pl.col("x").map_batches(lambda s: s), time="t", entity="e")
@@ -494,6 +504,7 @@ def test_causalize_raises_leakage_refused_carrying_the_result(
     assert "Agg.Mean" in str(excinfo.value)
 
 
+@requires_cloudpickle
 def test_audit_never_raises_on_a_leak(fixture_rules: dict[str, Rule]) -> None:
     """Contrast with causalize: audit reports, it does not raise."""
     result = audit(pl.col("x").map_batches(lambda s: s))

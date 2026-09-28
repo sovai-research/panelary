@@ -20,6 +20,7 @@ Three things are pinned here, in increasing order of importance.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 from typing import Any
@@ -64,8 +65,20 @@ pytestmark = pytest.mark.skipif(
 # Serialisation helpers
 # --------------------------------------------------------------------------- #
 def tree(expr: pl.Expr) -> Any:
-    """The serialised expression tree of ``expr``."""
-    return json.loads(expr.meta.serialize(format="json"))
+    """The serialised expression tree of ``expr``.
+
+    Polars pickles the callable inside ``map_batches`` / ``map_elements`` with
+    ``cloudpickle``; in the bare-core install (numpy + polars only) that case
+    cannot be serialised, so it is skipped rather than failed.
+    """
+    try:
+        return json.loads(expr.meta.serialize(format="json"))
+    except Exception:
+        if importlib.util.find_spec("cloudpickle") is None:
+            pytest.skip(
+                "serialising a Python UDF needs cloudpickle (absent in the bare-core install)"
+            )
+        raise
 
 
 def unparse(node: Any) -> pl.Expr:

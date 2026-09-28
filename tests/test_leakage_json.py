@@ -18,6 +18,7 @@ and :class:`~panelary.core.pipeline.PipelineAudit`, and exercise
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -42,6 +43,14 @@ from panelary.leakage._types import (
     Verdict,
     canonical_json,
     render_expr,
+)
+
+#: Polars pickles the callable inside ``map_batches`` / ``map_elements`` with
+#: ``cloudpickle`` when it serialises the expression tree. The bare-core install
+#: (numpy + polars only) does not have it, so these cases cannot run there.
+requires_cloudpickle = pytest.mark.skipif(
+    importlib.util.find_spec("cloudpickle") is None,
+    reason="serialising a Python UDF needs cloudpickle (absent in the bare-core install)",
 )
 from panelary.testing import assert_no_lookahead
 
@@ -173,6 +182,7 @@ def test_new_fields_do_not_change_equality() -> None:
     assert a == b
 
 
+@requires_cloudpickle
 def test_trust_is_recorded_in_the_context() -> None:
     """A trust-based acceptance must be visible in the evidence, not silent."""
     expr = pl.col("x").panel.frac_diff(0.4).over("e", order_by="t")
@@ -205,6 +215,7 @@ _SUBPROCESS = textwrap.dedent(
 )
 
 
+@requires_cloudpickle
 def test_to_json_is_byte_identical_across_processes() -> None:
     """Different interpreters, different hash seeds, different heap addresses:
     the evidence payload must not move by a byte."""

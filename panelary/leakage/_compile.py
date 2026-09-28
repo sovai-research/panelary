@@ -51,6 +51,7 @@ There is no path on which an unrecognised node is reported as ``SAFE``.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 from collections.abc import Iterable, Mapping, Sequence
@@ -141,6 +142,18 @@ def _to_tree(expr: pl.Expr) -> Any:
     try:
         return json.loads(expr.meta.serialize(format="json"))
     except Exception as exc:  # pragma: no cover - depends on Polars internals
+        if importlib.util.find_spec("cloudpickle") is None:
+            # The common cause in a numpy + polars install: Polars pickles the
+            # callable inside `map_batches` / `map_elements` (Panelary's own
+            # `frac_diff` among them) with cloudpickle, and cannot serialise
+            # the tree without it. Say that, not "pin a Polars version".
+            raise RuntimeError(
+                "could not serialise the Polars expression tree: "
+                f"{type(exc).__name__}: {exc}. If the expression holds a Python "
+                "function (`map_batches` / `map_elements`), Polars needs "
+                "`cloudpickle` to serialise it: `pip install cloudpickle`. The "
+                "expression has NOT been made point-in-time."
+            ) from exc
         raise _format_error("serialise", exc) from exc
 
 
