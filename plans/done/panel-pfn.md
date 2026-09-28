@@ -1,5 +1,18 @@
 # PanelPFN: a foundation model pretrained on a panel prior
 
+> **Status (2026-09-28): the Panelary half is implemented; the model half lives elsewhere.**
+> The prior is `panelary.synth`. `generate_panel` / `SynthConfig` / `sample_config`
+> are a seeded, dial-parameterised panel generator, with every dial listed below.
+> It emits the revised panel, the as-first-observed panel and bitemporal vintages
+> (`entity`, `event_time`, `knowledge_time`, `value`). `GroundTruth` holds the
+> planted lag and coefficient, and `check_planted_lag` is the leak check they
+> enable. Docs: `docs/user-guide/synthetic-panels.md`. Tests:
+> `tests/test_synth_*.py`. **CAFE premise checked and false**: `cafe` is an
+> imputer. Its only sampler is a private ten-line benchmark helper, so the
+> generator was written from scratch. The model, pretraining and GPU code
+> belong in a separate repository that depends on this one. This file stays in
+> `todo/` for that half.
+
 **Stage:** todo — needs a build contract before implementation · **Priority:** highest upside, highest cost · **Home:** its own repo; Panelary supplies the prior
 
 ## Pitch
