@@ -608,19 +608,25 @@ def score_step(
 # Shapley decomposition of the pipeline row
 # --------------------------------------------------------------------------- #
 def shapley_section(
-    df: pl.DataFrame,
-    folds: list[tuple[np.ndarray, ...]],
+    replicates: Sequence[tuple[int, pl.DataFrame, list[tuple[np.ndarray, ...]]]],
     alpha: float,
 ) -> None:
-    """Attribute the pipeline row's gap to its four stages, exactly.
+    """Attribute the pipeline row's gap to its four stages, per seed, exactly.
 
     The table's ``pipeline_split_last`` row is the whole preprocessing stack run
     permissively against the whole stack run point-in-time -- a single number
     for four interacting stages.  :func:`panelary.leakage.borrowed_accuracy`
     turns it into a decomposition: every one of the ``2 ** 4`` subsets is
-    scored, and the exact Shapley value of each stage is reported.  The parts
-    sum to the whole by construction, which is the check that the attribution
-    means anything.
+    scored, and the exact Shapley value of each stage is reported.  It is an
+    interventional (do-)Shapley value (Jung et al., ICML 2022) whose coalitions
+    are *executed*: each subset is a real backtest, nothing is estimated.
+
+    ``evaluate`` returns one pooled R^2 **per seed** -- each seed a fresh panel
+    draw with its own folds, so the replicates are independent reruns.  (Per-fold
+    R^2 values of one pooled score would not be: pooling is nonlinear.)  Shapley
+    is linear in ``v``, so each seed's decomposition is exact and sums to that
+    seed's gap; the section reports the median and range over seeds, like the
+    table above.
     """
     try:
         from panelary.leakage import borrowed_accuracy
@@ -628,14 +634,22 @@ def shapley_section(
         print(f"\n(skipping Shapley decomposition: {type(exc).__name__}: {exc})")
         return
 
-    y = df["y"].to_numpy().astype(np.float64)
-    # Slice the folds once, not once per subset: `evaluate` is called 2 ** k times.
-    sliced = [
-        (df[train_rows], df[test_rows], y[train_rows], y[test_rows])
-        for train_rows, test_rows in folds
-    ]
+    # Slice every seed's folds once, not once per subset: `evaluate` is called
+    # 2 ** k times, and each call scores every seed.
+    prepared = []
+    for _, df, folds in replicates:
+        y = df["y"].to_numpy().astype(np.float64)
+        sliced = [
+            (df[train_rows], df[test_rows], y[train_rows], y[test_rows])
+            for train_rows, test_rows in folds
+        ]
+        prepared.append((df, sliced))
 
-    def evaluate(selection: frozenset[str]) -> float:
+    def pooled_r2(
+        df: pl.DataFrame,
+        sliced: list[tuple[pl.DataFrame, pl.DataFrame, np.ndarray, np.ndarray]],
+        selection: frozenset[str],
+    ) -> float:
         preds, truth = [], []
         for train_df, test_df, y_train, y_test in sliced:
             source = {
@@ -648,23 +662,52 @@ def shapley_section(
             truth.append(y_test)
         return _r2(np.concatenate(truth), np.concatenate(preds))
 
+    def evaluate(selection: frozenset[str]) -> list[float]:
+        return [pooled_r2(df, sliced, selection) for df, sliced in prepared]
+
     try:
         report = borrowed_accuracy(PIPELINE_COMPONENTS, evaluate)
     except Exception as exc:  # noqa: BLE001 - API is not ours to pin
         print(f"\n(skipping Shapley decomposition: {type(exc).__name__}: {exc})")
         return
 
+    seeds = [seed for seed, _, _ in replicates]
+    n_rep = len(seeds)
     print("\n### Shapley decomposition of 'whole pipeline fitted before the split'")
-    print(f"(single seed; {2 ** len(PIPELINE_COMPONENTS)} backtests, nothing sampled)")
-    attribution = dict(report.attribution)
-    for name, phi in sorted(attribution.items(), key=lambda kv: -kv[1]):
-        print(f"  {name:<28}{phi:+.4f}")
-    total = float(report.total)
-    print(f"  {'-' * 28}{'':>7}")
-    print(f"  {'total borrowed accuracy':<28}{total:+.4f}")
     print(
-        f"  efficiency check: sum(phi) - total = "
-        f"{sum(attribution.values()) - total:+.2e}"
+        f"(exact, {2 ** len(PIPELINE_COMPONENTS)} subsets x {n_rep} seeds "
+        f"{seeds[0]}..{seeds[-1]} = {2 ** len(PIPELINE_COMPONENTS) * n_rep} "
+        "backtests, nothing sampled)"
+    )
+    head = f"  {'stage':<28}{'median':>9}{'min':>9}{'max':>9}{'mean':>9}"
+    print(head)
+    medians = report.attribution_median
+    ranges = report.attribution_range
+    for name, phi in sorted(report.attribution.items(), key=lambda kv: -kv[1]):
+        lo, hi = ranges[name]
+        print(f"  {name:<28}{medians[name]:+9.4f}{lo:+9.4f}{hi:+9.4f}{phi:+9.4f}")
+    print(f"  {'-' * (len(head) - 2)}")
+    t_lo, t_hi = report.total_range
+    print(
+        f"  {'total borrowed accuracy':<28}{report.total_median:+9.4f}"
+        f"{t_lo:+9.4f}{t_hi:+9.4f}{report.total:+9.4f}"
+    )
+    worst = max(
+        abs(
+            sum(report.replicate_attribution[n][r] for n in PIPELINE_COMPONENTS)
+            - report.replicate_totals[r]
+        )
+        for r in range(n_rep)
+    )
+    mean_gap = sum(report.attribution.values()) - report.total
+    print(
+        f"  efficiency: max over seeds |sum(phi) - total| = {worst:.1e}; "
+        f"for the mean, {abs(mean_gap):.1e}"
+    )
+    print(
+        "  median/min/max: over seeds, per stage. Medians need not sum to the "
+        "median total;\n  each seed's values sum to that seed's gap, and the "
+        "means sum to the mean gap."
     )
 
 
@@ -746,6 +789,7 @@ def run(
     perm: dict[str, list[float]] = {s.key: [] for s in steps}
     pit: dict[str, list[float]] = {s.key: [] for s in steps}
 
+    replicates: list[tuple[int, pl.DataFrame, list[tuple[np.ndarray, ...]]]] = []
     for seed in seeds:
         df = make_panel(n_entities, n_time, seed)
         folds = _fold_positions(df, n_splits=5)
@@ -753,6 +797,8 @@ def run(
             p, q = score_step(df, folds, step, alpha)
             perm[step.key].append(p)
             pit[step.key].append(q)
+        if only is None:
+            replicates.append((seed, df, folds))
 
     checks = verifier_column(steps, base_seed)
 
@@ -816,8 +862,7 @@ def run(
         print(f"  {label:<38}{med:+.3f}  {bar}")
 
     if only is None:
-        base_df = make_panel(n_entities, n_time, base_seed)
-        shapley_section(base_df, _fold_positions(base_df, n_splits=5), alpha)
+        shapley_section(replicates, alpha)
 
 
 def main() -> int:

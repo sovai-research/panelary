@@ -1,5 +1,38 @@
 # do-Shapley: attribution by intervention, not association
 
+> **Status (2026-09-28): implemented.** C0–C3 all shipped. The C3 build
+> contract is written below, under C3.
+>
+> - **Core.** `panelary/_internal/_shapley.py` is new: the exact solver, the
+>   antithetic permutation solver with Monte-Carlo SE, the coalition memo, and
+>   canonical JSON helpers. Both callers now use it.
+> - **C0.** `leakage/_borrowed.py` names the attribution an executed
+>   interventional (do-)Shapley value, citing Jung et al. (ICML 2022) and Heskes
+>   et al. (2020). `docs/benchmarks/leakage-table.md` says the same, and
+>   `docs/user-guide/attribution.md` gains a causal-reading column, plus a
+>   warning that covers Corollary 2 and the direct-cause assumption.
+> - **C1.** `evaluate` may return a vector of replicate scores. The headline is
+>   the replicate mean, which keeps efficiency. The report adds per-replicate
+>   values, `attribution_median` / `attribution_range` and
+>   `total_median` / `total_range`. A scalar `evaluate` is unchanged. The
+>   benchmark's Shapley section now runs over all seeds (`--long`: 9 seeds, 144
+>   backtests, about 10 s), and the doc table reports median, min, max and mean.
+>   The earlier single-seed numbers were seed 0, the minimum of the nine.
+> - **C2.** `method="permutation", n_permutations=M, seed=` is opt-in only. The
+>   refusal still leads with "Group components".
+> - **C3.** `panelary/select/_refit_shapley.py` adds `refit_shapley` and
+>   `RefitShapleyReport`, exported from `panelary.select`. It supports groups,
+>   `base_features`, a training-mean baseline, CRN folds and seeds, seed
+>   replicates, `per_period`, and permutation beyond 12 groups. The selection
+>   guide and API reference document it.
+> - **Serialisation.** `to_dict()` / `to_json()` on both reports follows the
+>   shared `schema` / `produced_by` convention.
+> - **Tests.** `tests/test_shapley_core.py` (37), `tests/test_refit_shapley.py`
+>   (36) and `tests/test_leakage_borrowed.py` (56, of which 18 are new).
+> - **Deferred.** The per-fold decomposition is per *fold*; sub-fold periods
+>   (e.g. per month inside a test block) are not offered. The out-of-scope items
+>   below stay out of scope.
+
 **Stage:** todo — C0–C2 are small enough to build directly; C3 needs a build contract · **Priority:** C1 first (it fixes a reporting inconsistency), C3 has the most user value · **Home:** Panelary — `leakage/_borrowed.py`, `explain`, `select`
 
 ## Pitch
@@ -133,6 +166,95 @@ Design constraints:
   baseline every φ is measured against.
 - Extract the combinatorics from `_borrowed.py` into a neutral core rather than
   calling a function named "borrowed accuracy" for a different question.
+
+#### C3 build contract (written 2026-09-28, from the constraints above)
+
+**Surface.** `panelary.select.refit_shapley(estimator, X, y, cv, groups, *,
+base_features=(), scoring=None, seeds=None, per_period=False, method="exact",
+n_permutations=None, seed=0, max_players=12, entity=None, time=None)
+-> RefitShapleyReport`. Reachable as `pn.select.refit_shapley`.
+
+**Players.** `groups` maps a player name to a non-empty list of numeric feature
+columns; a plain list of columns means one player per column. Groups are
+pairwise disjoint and may not contain the target or a panel key.
+`base_features` (disjoint from every group) are in *every* coalition, including
+the empty one: they answer "what is this dataset worth on top of what I
+already have?". `k >= 1`.
+
+**Value function.** `v(S)` is the mean, over the folds `cv.split(panel)`
+yields (the same `split(panel) -> (train, test)` protocol `select.mda` scores
+through), of the out-of-fold score of a **fresh** estimator fitted on the
+training block using the columns `base_features + union(groups[g] for g in S)`
+and scored on the test block. Scores are higher-is-better: `"r2"` (default for
+regressors; 1 − SSE/SST about the test-fold mean, numpy, identical to
+sklearn's `r2_score`), `"neg_mse"`, `"accuracy"` (default for classifiers), or
+a callable `(y_true, y_pred) -> float`. A non-finite score is an error.
+
+**`v({})`, explicitly.** With no `base_features`: predict the **training-fold**
+mean of `y` (majority class for a classifier), scored like any other
+coalition; nothing is fitted. With `base_features`: the estimator refit on
+those alone. Every φ is measured against this baseline, and `v(N) − v({})` is
+the report's `total`.
+
+**Features computed once.** The function never computes a feature. Each fold is
+collected to numpy once; a coalition slices columns. Only the model is refit.
+
+**Common random numbers.** Folds are materialised once and shared by every
+coalition. Rows: a row enters a fold's train or test block iff the target and
+every group and base column are finite, so every coalition sees the same rows.
+A fold with fewer than 2 usable training rows or no usable test rows is dropped
+for all coalitions. Replicate `r` uses `seeds[r]` as the estimator's
+`random_state` (via `set_params`, else the attribute; an estimator with
+neither is refused) for **every** coalition and fold. `estimator` may instead
+be a factory `make(seed: int | None) -> estimator`.
+
+**Solve.** Through the neutral core `panelary/_internal/_shapley.py` (the
+combinatorics extracted from `_borrowed.py`, which now uses it too). Exact up
+to `max_players` (default 12); beyond, refuse with "group your features" as the
+first suggestion, unless `method="permutation", n_permutations=M` is passed (C2
+semantics: antithetic pairs, memoised coalitions, efficiency to floating-point
+tolerance, a Monte-Carlo SE per player). Never a silent fallback.
+
+**Replicates (C1) and periods.** The game's value is an array `(R, F)`
+(replicates × folds); Shapley is linear, so each entry is solved exactly and
+efficiency holds per replicate and per fold. Headline φ = mean over replicates
+of the fold-mean φ (so it sums to `total`); with `seeds`, the per-replicate φ
+and their median and range are reported. `per_period=True` adds the per-fold
+decomposition (each fold's test-time span, φ averaged over replicates, and its
+own total); because `v` is the fold mean, the headline equals the mean of the
+per-fold φ exactly.
+
+**Leak-safety (the contract it touches: `leakage_safe`).** Every fit sees
+training rows only, per fold, through the caller's purged splitter; the
+baseline mean is the training fold's; nothing is fitted on the whole panel.
+Refit Shapley does **not** audit the features themselves — they must already
+be point-in-time (`panelary.leakage.audit`, `assert_no_lookahead`).
+
+**Cost.** (coalitions evaluated) × (folds) × (replicates) fits, minus the
+fit-free `v({})`: `2**k` coalitions exact, at most `M(k−1)+2` sampled.
+
+**Report.** `RefitShapleyReport`, frozen: `attribution`, `total`,
+`full_score`, `baseline_score`, `groups`, `group_features`, `base_features`,
+`n_evaluations`, `n_fits`, `n_folds`, `scoring`, `baseline`, `method`,
+`n_permutations`, `seed`, `standard_error`, `seeds`, `replicate_attribution`,
+`replicate_totals`, `per_period`, `coalition_values`; `ranked`, `share`,
+`attribution_median` / `attribution_range`, `to_frame()`, `to_dict()` /
+`to_json()` (shared convention: `schema = "panelary.RefitShapleyReport/1"`,
+`produced_by = "panelary.select.refit_shapley@<version>"`, byte-deterministic).
+
+**Files.**
+
+| File | Owner | Change |
+| --- | --- | --- |
+| `panelary/_internal/_shapley.py` | do-shapley | new: exact + permutation solvers, memo, JSON helpers |
+| `panelary/leakage/_borrowed.py` | do-shapley | C0 docs, C1 replicates, C2 permutation, `to_dict`/`to_json`, uses the core |
+| `panelary/select/_refit_shapley.py` | do-shapley | new: `refit_shapley`, `RefitShapleyReport` |
+| `panelary/select/__init__.py` | do-shapley | additive export |
+| `tests/test_shapley_core.py`, `tests/test_refit_shapley.py`, `tests/test_leakage_borrowed.py` | do-shapley | axioms, CRN, baseline, leak and determinism tests |
+| `panelary/__init__.py`, `leakage/__init__.py`, `CHANGELOG.md`, `mkdocs.yml` | orchestrator | none needed beyond what the report lists |
+
+**Dependencies.** numpy + polars only. sklearn is used if present (for
+`clone`), never required; the default scorers are numpy.
 
 **Out of scope.**
 

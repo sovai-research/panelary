@@ -92,11 +92,37 @@ evidence that no explanation saw the future.
 
 The single most consequential knob, and the one every library hides:
 
-| `mode` | Semantics | Needs a background? | Use it when |
-| --- | --- | --- | --- |
-| `interventional` **(default)** | Marginal — "true to the model". Breaks feature correlations, so credit goes only to features the model actually *uses*. | **Yes** — fold-bound, past-only. | You want **actionable** attributions ("if I change this input, what moves?"), or the model is sparse and you want zero credit for unused features. |
-| `conditional` | Observational — "true to the data". Spreads credit across correlated features. | Yes (reported as `shap_reference_expectation`). | You want to know **what the model's inputs indicate**, and you accept that two near-duplicate features share credit. Common in factor work, where collinearity is the norm. |
-| `path_dependent` | The raw native call, no external reference. | **No** — and that is the problem. | Only with an explicit acknowledgement; see below. |
+| `mode` | Semantics | Causal reading | Needs a background? | Use it when |
+| --- | --- | --- | --- | --- |
+| `interventional` **(default)** | Marginal — "true to the model". Breaks feature correlations, so credit goes only to features the model actually *uses*. | A do-Shapley on the **model's inputs**: the causal contribution of each input to `f(x)`. It equals the do-Shapley on the real target only under the *direct-cause* graph (see below). | **Yes** — fold-bound, past-only. | You want **actionable** attributions ("if I change this input, what moves?"), or the model is sparse and you want zero credit for unused features. |
+| `conditional` | Observational — "true to the data". Spreads credit across correlated features. | **Not causal.** It fails *causal irrelevance*: it can credit a feature the outcome does not depend on, because that feature is correlated with one it does. | Yes (reported as `shap_reference_expectation`). | You want to know **what the model's inputs indicate**, and you accept that two near-duplicate features share credit. Common in factor work, where collinearity is the norm. |
+| `path_dependent` | The raw native call, no external reference. | Same kernel as `conditional`, so the same verdict, with the training distribution as its hidden reference. | **No** — and that is the problem. | Only with an explicit acknowledgement; see below. |
+
+!!! warning "No `explain` output is a causal contribution of a feature *to returns*"
+    The causal column follows Jung et al., *On Measuring Causal Contributions
+    via do-interventions* (ICML 2022), Table 1 and Corollary 2. Interventional
+    SHAP intervenes on the model's inputs, and Corollary 2 is the condition
+    under which that is also a statement about the target:
+    `E[Y | do(v_S)] = Σ E[Y | v_S, v_S̄] P(v_S̄)`, which is marginal Shapley
+    applied to the regression function. It holds under the **direct-cause**
+    graph, where no feature causes another and nothing confounds a feature with
+    `Y`.
+
+    **Engineered panel features break that assumption by construction.**
+    Momentum, volatility and drawdown are all functions of the same price path,
+    so one feature is partly a cause of another. Read interventional SHAP as a
+    statement about the model: "if I change this input, what moves?" It says
+    nothing about what moves returns. Panelary does not port the paper's
+    observational estimators. They assume discrete features and a causal graph
+    over features that you cannot justify, and their random-halves
+    cross-fitting is invalid on a serially dependent panel.
+
+    Two Panelary numbers *are* do-Shapley values in the paper's sense, because
+    each coalition is **executed** rather than estimated. They are
+    [`leakage.borrowed_accuracy`](../api-reference/leakage.md), whose players
+    are pipeline stages, and
+    [`select.refit_shapley`](selection.md#refit-shapley-what-a-feature-group-is-worth),
+    whose players are feature groups refit through purged CV.
 
 Two honest notes:
 

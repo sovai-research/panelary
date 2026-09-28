@@ -132,21 +132,51 @@ Two instrument artefacts worth recording, both found by running the cross-check:
 ## Decomposing a pipeline
 
 The "whole pipeline fitted before the split" row is four interacting stages reported as one
-number. `panelary.leakage.borrowed_accuracy` turns it into a decomposition — all
-`2⁴ = 16` subsets evaluated, exact Shapley values, nothing sampled:
+number. `panelary.leakage.borrowed_accuracy` turns it into a decomposition. It evaluates all
+`2⁴ = 16` subsets and gives each stage its exact Shapley value, with nothing sampled.
 
-| Stage | Shapley value |
-|---|---:|
-| Target encoder | **+0.0455** |
-| Imputer | +0.0000 |
-| Winsoriser | +0.0000 |
-| Scaler | +0.0000 |
-| **Total borrowed accuracy** | **+0.0456** |
+That value is an **interventional (do-)Shapley value** in the sense of Jung et al., *On
+Measuring Causal Contributions via do-interventions* (ICML 2022). Each subset's score is
+`E[score | do(these stages permissive, the rest point-in-time)]`. The paper spends most of its
+length identifying and estimating such quantities from observational data, because an outcome
+produced by nature cannot be rerun. A pipeline can be rerun. Every coalition here is
+**executed**, a real backtest, so identification is trivial and no estimator is involved. The
+paper's axioms carry over: efficiency is `sum(φ) = total`, and causal irrelevance is the
+null-player property. Strictly, this is the *baseline* form. `v({})` is the all-point-in-time
+run, which is itself an intervention rather than a natural regime. So "Shapley isn't causal"
+does not apply to this number.
 
-`sum(φ) − total = 0.0e+00` — the efficiency axiom holds exactly, which is what makes this a
-decomposition rather than a set of ablations. The attribution also reproduces the per-step
-table from the other direction: the stages it prices at zero are the three whose standalone
-rows are zero, and the stage it blames is the one whose standalone row is +0.056.
+The decomposition is run on **every seed**. `evaluate` returns one pooled R² per seed, and
+each seed is a fresh panel draw with its own folds. The replicates are therefore independent
+reruns, not the per-fold pieces of one pooled score, which would not qualify because pooling
+is nonlinear. Shapley is linear in `v`, so each seed's decomposition is exact and sums to that
+seed's gap. Nine seeds, 144 backtests:
+
+| Stage | median φ | min | max | mean φ |
+|---|---:|---:|---:|---:|
+| Target encoder | **+0.0469** | +0.0455 | +0.0473 | +0.0466 |
+| Imputer | +0.0001 | +0.0000 | +0.0002 | +0.0001 |
+| Winsoriser | +0.0000 | −0.0000 | +0.0001 | +0.0000 |
+| Scaler | +0.0000 | −0.0000 | +0.0000 | +0.0000 |
+| **Total borrowed accuracy** | **+0.0469** | +0.0456 | +0.0474 | +0.0467 |
+
+Efficiency holds per seed: the largest `|sum(φ) − total|` over the nine seeds is `1.4e-17`.
+The mean column is itself the exact Shapley value of the seed-averaged game, so it sums to the
+mean total (discrepancy `0.0e+00`). Medians need not add up, and do not here.
+
+The per-seed totals reproduce the table's pipeline row bit for bit (gap 0.0469, range
+0.0456–0.0474; checked per seed, difference `0.0`), because they are the same computation.
+The attribution also agrees with the per-step table from the other direction. The three
+stages priced at about zero are the three whose standalone rows are about zero, and the stage
+it blames is the one whose standalone row is +0.056. The imputer and winsoriser are not
+exactly zero: they are below 0.0002 on every seed, and the winsoriser changes sign across
+seeds. The scaler is zero to within 2e-16 on every seed, as the scale-invariance argument
+above says it must be.
+
+An earlier version of this section reported a single seed, seed 0: encoder +0.0455, total
++0.0456. That seed turns out to be the **minimum** of the nine for both. It was a real
+measurement, but reported alone it understated the typical value, which is the "report
+ranges" rule below in action.
 
 ## Honesty notes
 
@@ -167,8 +197,9 @@ Read these before quoting a number.
   differencing (0.0071) barely predict at all on this DGP. Their gaps are consistent across
   seeds and so are real, but a gap between two near-zero scores should not be read as a
   ranking against the strong rows.
-- **A single seed is not evidence.** The `gap min` / `gap max` columns exist because of a real
-  failure: an earlier draft parameterised the volatility AR(1) by its *innovation* sd rather
+- **A single seed is not evidence.** This applies to the Shapley section too, which now
+  reports the median and range over the same nine seeds. The `gap min` / `gap max` columns
+  exist because of a real failure: an earlier draft parameterised the volatility AR(1) by its *innovation* sd rather
   than its process sd, so at ρ = 0.95 the process sd was 3.2× larger than intended, one seed
   in nine produced an entity whose series ran to five figures, and that seed alone moved the
   centred-rolling-mean gap to +0.82. The median across nine seeds hid it; the range did not.
@@ -189,11 +220,18 @@ Read these before quoting a number.
 ## Reproducing
 
 ```bash
-python benchmarks/bench_leakage_table.py                 # ~20k rows, 5 seeds, ~6s
-python benchmarks/bench_leakage_table.py --long          # 150k rows, 9 seeds, ~17s
+python benchmarks/bench_leakage_table.py                 # ~20k rows, 5 seeds, ~3s
+python benchmarks/bench_leakage_table.py --long          # 150k rows, 9 seeds, ~10s
 python benchmarks/bench_leakage_table.py --only shift_negative
 python benchmarks/bench_leakage_table.py --rows 50000 --seed 100 --seeds 3
 ```
 
-Deterministic (seeded RNG throughout), float64, numpy + polars only — no scikit-learn, so it
-runs on the bare-core install.
+Wall times were measured on 2026-09-28 on the machine above, with the Shapley section
+included. Deterministic (seeded RNG throughout), float64, numpy + polars only — no
+scikit-learn, so it runs on the bare-core install.
+
+## Reference
+
+Jung, Y., Kasiviswanathan, S., Tian, J., Janzing, D., Blöbaum, P., & Bareinboim, E. (2022).
+*On measuring causal contributions via do-interventions.* Proceedings of the 39th
+International Conference on Machine Learning, PMLR 162:10476–10501.

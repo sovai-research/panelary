@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import doctest
 import itertools
+import json
 import math
 
 import numpy as np
@@ -549,3 +550,283 @@ def test_end_to_end_point_in_time_run_is_reproducible(
     again = borrowed_accuracy(PIPELINE, lambda s: score_pipeline(folds, s))
     assert again.attribution == leaky_pipeline_report.attribution
     assert again.total == leaky_pipeline_report.total
+
+
+# --------------------------------------------------------------------------- #
+# C1: replicate-aware evaluate (one score per seed)
+# --------------------------------------------------------------------------- #
+def replicate_game(names, n_rep: int, seed: int):
+    """``n_rep`` independent dense games, returned as one vector per subset."""
+    games = [random_game(names, seed=seed + r) for r in range(n_rep)]
+
+    def evaluate(selection: frozenset[str]) -> list[float]:
+        return [g(selection) for g in games]
+
+    return evaluate, games
+
+
+def test_replicates_are_each_solved_exactly() -> None:
+    """Per-replicate phi equal the scalar decomposition of that replicate."""
+    names = ["a", "b", "c", "d"]
+    evaluate, games = replicate_game(names, n_rep=5, seed=200)
+    report = borrowed_accuracy(names, evaluate)
+
+    assert report.n_replicates == 5
+    assert report.n_evaluations == 2 ** len(names)  # one call per subset, not per seed
+    for r, game in enumerate(games):
+        single = borrowed_accuracy(names, game)
+        for name in names:
+            assert report.replicate_attribution[name][r] == pytest.approx(
+                single.attribution[name], abs=TOL
+            )
+        assert report.replicate_totals[r] == pytest.approx(single.total, abs=TOL)
+
+
+def test_efficiency_holds_within_every_replicate_and_for_the_mean() -> None:
+    names = ["a", "b", "c", "d", "e"]
+    evaluate, _ = replicate_game(names, n_rep=7, seed=300)
+    for higher in (True, False):
+        report = borrowed_accuracy(names, evaluate, higher_is_better=higher)
+        for r in range(7):
+            phis = [report.replicate_attribution[n][r] for n in names]
+            assert sum(phis) == pytest.approx(report.replicate_totals[r], abs=TOL)
+        # The headline is the replicate mean, so it is a decomposition too.
+        assert sum(report.attribution.values()) == pytest.approx(report.total, abs=TOL)
+        assert report.total == pytest.approx(
+            float(np.mean(report.replicate_totals)), abs=TOL
+        )
+
+
+def test_replicate_median_and_range_per_component() -> None:
+    def evaluate(selection: frozenset[str]) -> list[float]:
+        leak = [0.10, 0.30, 0.20, 0.00, 0.25] if "scaler" in selection else [0.0] * 5
+        return leak
+
+    report = borrowed_accuracy(["scaler", "imputer"], evaluate)
+    assert report.attribution_median["scaler"] == pytest.approx(0.20, abs=TOL)
+    assert report.attribution_range["scaler"] == pytest.approx((0.0, 0.30), abs=TOL)
+    assert report.attribution["scaler"] == pytest.approx(0.17, abs=TOL)  # the mean
+    assert report.attribution_range["imputer"] == (0.0, 0.0)
+    assert report.total_median == pytest.approx(0.20, abs=TOL)
+    assert report.total_range == pytest.approx((0.0, 0.30), abs=TOL)
+    text = str(report)
+    assert "5 replicates" in text and "median" in text
+
+
+def test_scalar_evaluate_keeps_the_original_report_shape() -> None:
+    report = borrowed_accuracy(["a", "b"], additive_game({"a": 0.2, "b": 0.1}))
+    assert report.n_replicates is None
+    assert report.replicate_totals == ()
+    assert report.replicate_attribution == {}
+    assert report.method == "exact" and report.standard_error is None
+    assert report.attribution_median == report.attribution
+    assert report.attribution_range["a"] == (report.attribution["a"],) * 2
+    assert report.total_median == report.total
+    assert isinstance(report.total, float)
+    assert all(isinstance(v, float) for v in report.coalition_values.values())
+
+
+def test_a_single_replicate_vector_is_still_replicate_mode() -> None:
+    report = borrowed_accuracy(["a"], lambda s: [1.0] if s else [0.25])
+    assert report.n_replicates == 1
+    assert report.total == pytest.approx(0.75, abs=TOL)
+
+
+def test_numpy_vectors_are_accepted() -> None:
+    report = borrowed_accuracy(
+        ["a"], lambda s: np.array([1.0, 2.0]) if s else np.zeros(2)
+    )
+    assert report.replicate_totals == (1.0, 2.0)
+
+
+def test_replicate_vectors_must_have_one_length() -> None:
+    with pytest.raises(ValueError, match="same replicates"):
+        borrowed_accuracy(["a"], lambda s: [1.0, 2.0, 3.0] if s else [0.0, 0.0])
+    with pytest.raises(ValueError, match="a scalar"):
+        borrowed_accuracy(["a"], lambda s: [1.0, 2.0] if s else 0.0)
+
+
+def test_replicate_vectors_are_validated() -> None:
+    with pytest.raises(ValueError, match="1-D vector"):
+        borrowed_accuracy(["a"], lambda s: [[0.1, 0.2], [0.3, 0.4]])
+    with pytest.raises(ValueError, match="empty vector"):
+        borrowed_accuracy(["a"], lambda s: [])
+    with pytest.raises(ValueError, match="finite score"):
+        borrowed_accuracy(["a"], lambda s: [0.1, math.nan])
+    with pytest.raises(TypeError, match="replicate scores"):
+        borrowed_accuracy(["a"], lambda s: ["0.1", "0.2"])  # type: ignore[arg-type,return-value]
+
+
+def test_end_to_end_replicates_over_independent_panels() -> None:
+    """Three independent panel draws, one evaluate call per subset."""
+    splitter = expanding_window_split(test_size=4, n_splits=5, step_size=4)
+    fold_sets = []
+    for seed in (0, 1, 2):
+        panel = make_leaky_panel(seed=seed)
+        fold_sets.append(
+            [(_arrays(train), _arrays(test)) for train, test in splitter(panel)]
+        )
+
+    report = borrowed_accuracy(
+        PIPELINE, lambda s: [score_pipeline(folds, s) for folds in fold_sets]
+    )
+    assert report.n_replicates == 3
+    assert report.n_evaluations == 8
+    # Seed 0 is the single-seed fixture: its replicate must reproduce it exactly.
+    single = borrowed_accuracy(PIPELINE, lambda s: score_pipeline(fold_sets[0], s))
+    for name in single.attribution:
+        assert report.replicate_attribution[name][0] == pytest.approx(
+            single.attribution[name], abs=TOL
+        )
+    for r in range(3):
+        assert report.replicate_totals[r] > 0.0  # every draw borrows
+        assert sum(report.replicate_attribution[n][r] for n in single.attribution) == (
+            pytest.approx(report.replicate_totals[r], abs=1e-10)
+        )
+
+
+# --------------------------------------------------------------------------- #
+# C2: opt-in permutation sampling beyond max_components
+# --------------------------------------------------------------------------- #
+def test_permutation_lifts_the_limit_at_a_bounded_cost() -> None:
+    k, m = 20, 50
+    names = [f"c{i}" for i in range(k)]
+    weights = {n: 0.01 * (i + 1) for i, n in enumerate(names)}
+
+    def evaluate(selection: frozenset[str]) -> float:
+        joint = 0.3 if {"c1", "c2"} <= selection else 0.0
+        return sum(weights[n] for n in selection) + joint
+
+    counted = counting(evaluate)
+    report = borrowed_accuracy(
+        names, counted, method="permutation", n_permutations=m, seed=0
+    )
+    assert report.method == "permutation"
+    assert report.n_permutations == m and report.seed == 0
+    assert report.n_evaluations == len(set(counted.calls)) == len(counted.calls)
+    assert report.n_evaluations <= m * (k - 1) + 2 == 952
+    # Efficiency to floating-point tolerance, not in expectation.
+    assert sum(report.attribution.values()) == pytest.approx(report.total, abs=1e-10)
+    # Additive plus one pairwise interaction: antithetic pairs make it exact.
+    assert report.attribution["c1"] == pytest.approx(weights["c1"] + 0.15, abs=1e-10)
+    assert report.attribution["c2"] == pytest.approx(weights["c2"] + 0.15, abs=1e-10)
+    assert report.attribution["c7"] == pytest.approx(weights["c7"], abs=1e-10)
+    assert report.standard_error is not None
+    assert set(report.standard_error) == set(names)
+    assert "permutation Shapley" in str(report)
+
+
+def test_permutation_agrees_with_exact_within_its_standard_error() -> None:
+    names = [f"c{i}" for i in range(6)]
+    evaluate = random_game(names, seed=5)
+    exact = borrowed_accuracy(names, evaluate)
+    sampled = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=300, seed=1
+    )
+    assert sampled.standard_error is not None
+    for name in names:
+        se = sampled.standard_error[name]
+        assert se > 0
+        assert abs(sampled.attribution[name] - exact.attribution[name]) < 5 * se
+    assert sampled.total == pytest.approx(exact.total, abs=TOL)
+
+
+def test_permutation_is_seeded() -> None:
+    names = [f"c{i}" for i in range(14)]
+    evaluate = random_game(names, seed=8)
+    a = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=8, seed=3
+    )
+    b = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=8, seed=3
+    )
+    c = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=8, seed=4
+    )
+    assert a.attribution == b.attribution
+    assert a.to_json() == b.to_json()
+    assert a.attribution != c.attribution
+
+
+def test_permutation_with_replicates() -> None:
+    names = [f"c{i}" for i in range(13)]
+    evaluate, _ = replicate_game(names, n_rep=3, seed=40)
+    report = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=6, seed=0
+    )
+    assert report.n_replicates == 3
+    assert report.standard_error is not None
+    for r in range(3):
+        phis = [report.replicate_attribution[n][r] for n in names]
+        assert sum(phis) == pytest.approx(report.replicate_totals[r], abs=1e-10)
+
+
+def test_refusal_suggests_grouping_first_and_names_the_opt_in() -> None:
+    names = [f"c{i}" for i in range(13)]
+    with pytest.raises(ValueError) as info:
+        borrowed_accuracy(names, lambda s: 0.0)
+    message = str(info.value)
+    assert message.index("Group components") < message.index("method='permutation'")
+    assert "2**13 = 8192" in message
+
+
+def test_permutation_is_never_a_silent_fallback() -> None:
+    with pytest.raises(ValueError, match="needs n_permutations"):
+        borrowed_accuracy(["a", "b"], lambda s: 0.0, method="permutation")
+    with pytest.raises(ValueError, match="only applies to method='permutation'"):
+        borrowed_accuracy(["a", "b"], lambda s: 0.0, n_permutations=10)
+    with pytest.raises(ValueError, match="even"):
+        borrowed_accuracy(
+            ["a", "b"], lambda s: 0.0, method="permutation", n_permutations=5
+        )
+    with pytest.raises(ValueError, match="method must be one of"):
+        borrowed_accuracy(["a", "b"], lambda s: 0.0, method="sampled")
+
+
+# --------------------------------------------------------------------------- #
+# to_dict / to_json
+# --------------------------------------------------------------------------- #
+def test_to_dict_is_json_safe_and_carries_schema_and_provenance() -> None:
+    import panelary
+
+    report = borrowed_accuracy(
+        ["scaler", "imputer"], additive_game({"scaler": 0.2, "imputer": 0.05})
+    )
+    d = report.to_dict()
+    assert d["schema"] == "panelary.BorrowedAccuracyReport/1"
+    assert d["produced_by"] == (
+        f"panelary.leakage.borrowed_accuracy@{panelary.__version__}"
+    )
+    assert d["components"] == ["scaler", "imputer"]
+    assert d["method"] == "exact" and d["n_replicates"] is None
+    assert len(d["coalitions"]) == 4
+    assert d["coalitions"][0] == {"permissive": [], "value": 0.0}
+    assert d["coalitions"][-1]["permissive"] == ["scaler", "imputer"]
+    assert json.loads(report.to_json()) == d
+    assert json.loads(report.to_json(indent=2)) == d
+
+
+def test_to_json_is_byte_deterministic() -> None:
+    names = ["a", "b", "c"]
+    evaluate, _ = replicate_game(names, n_rep=3, seed=1)
+    first = borrowed_accuracy(names, evaluate).to_json()
+    second = borrowed_accuracy(names, evaluate).to_json()
+    assert first == second
+    assert first == json.dumps(json.loads(first), sort_keys=True, separators=(",", ":"))
+    for forbidden in ("0x", "timestamp", "created"):
+        assert forbidden not in first
+
+
+def test_to_dict_with_replicates_and_permutation() -> None:
+    names = [f"c{i}" for i in range(5)]
+    evaluate, _ = replicate_game(names, n_rep=2, seed=9)
+    d = borrowed_accuracy(
+        names, evaluate, method="permutation", n_permutations=4, seed=0
+    ).to_dict()
+    assert d["method"] == "permutation" and d["n_permutations"] == 4
+    assert d["n_replicates"] == 2
+    assert set(d["standard_error"]) == set(names)
+    assert len(d["replicate_totals"]) == 2
+    assert set(d["attribution_summary"]["c0"]) == {"median", "min", "max"}
+    assert all(len(c["replicates"]) == 2 for c in d["coalitions"])
+    json.dumps(d, allow_nan=False)  # strictly valid JSON

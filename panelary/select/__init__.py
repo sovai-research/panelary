@@ -7,6 +7,10 @@ Public API:
 * :func:`mda` -- Mean-Decrease-Accuracy (permutation) importance evaluated
   through a purged CV splitter, so importances are leak-free.
 * :func:`mdi` -- Mean-Decrease-Impurity importance from a fitted tree ensemble.
+* :func:`refit_shapley` -- the Shapley value of each feature group (or data
+  source) to a model **refit** on it through a purged CV splitter; redundant
+  groups split their credit instead of both scoring zero.
+  :class:`RefitShapleyReport` is what it returns.
 * :class:`MRMRSelector` -- a :class:`~panelary.core.protocol.PanelTransformer`
   wrapping :func:`mrmr` for use as a ``"select"`` step in a
   :class:`~panelary.core.pipeline.Pipeline`.
@@ -26,6 +30,7 @@ Unsupervised (no target ``y``; still leak-safe, selection frozen at fit time):
 from __future__ import annotations
 
 from panelary.select._methods import MRMRSelector, mda, mdi, mrmr
+from panelary.select._refit_shapley import RefitShapleyReport, refit_shapley
 from panelary.select._unsupervised import (
     CorrelationSelector,
     PFASelector,
@@ -41,6 +46,8 @@ __all__ = [
     "mrmr",
     "mda",
     "mdi",
+    "refit_shapley",
+    "RefitShapleyReport",
     "MRMRSelector",
     "pfa",
     "variance",
