@@ -1,5 +1,39 @@
 # CrossROCKET: fixed random transforms across the cross-section
 
+> **Status (2026-09-28): implemented.** Shipped: `panelary/embed/_cross_rocket.py`, which
+> contains `CrossRocket`. It has four permutation-equivariant operator families:
+> `median_dev`, `rank_threshold`, `subset_agg` and `peer_dev`. The peer baskets come from
+> strictly trailing correlations. The class declares `panel_safe=False`,
+> `leakage_safe=True`, `fit_is_empty=True` and `is_cross_sectional=True`.
+>
+> Deliberate choices:
+> - **Pooling.** Outputs are per-entity by default, because a per-date pooled number
+>   cannot change any rank under a linear head. Pooled PPV/MPV is opt-in through
+>   `output="pooled"` or `"both"`.
+> - **Output format.** Float64 columns by default, with float32 and `pl.Array` optional.
+>   This deviates from the embed contract's Float32 array default.
+> - **Robust z.** It is a numpy median/MAD, because `.xs.demean` subtracts the mean. It is
+>   tested against the equivalent polars expression.
+> - **Export.** `CrossRocket` is exported from `panelary.embed`.
+>
+> Tests: `tests/test_embed_cross_rocket.py`, 48 tests.
+>
+> Benchmark: `benchmarks/cross_rocket/`, written up in `docs/benchmarks/cross-rocket.md`.
+>
+> **Headline.**
+> - **Real S&P 500 data** (93,421 stock-days, 2022-08 to 2023-05). Every fitted design
+>   (handcrafted, RFF-on-own-characteristics, CrossRocket, and their combinations) has a
+>   negative rank IC with |NW t| < 2, so the real data cannot rank them. Adding CrossRocket
+>   to handcrafted features changes IC by −0.0003 under k-fold and +0.0033 under
+>   walk-forward, both within the spread across seeds.
+> - **A planted synthetic peer-relative signal.** The peer family carries it: CrossRocket
+>   beats its no-peer ablation on 5/5 seeds in 3 of 4 settings. CrossRocket matches
+>   handcrafted features rather than beating them, and it beats RFF. No fitted design
+>   reaches the unfitted reversal signal.
+>
+> No novelty is claimed; see Kelly–Malamud and multivariate MiniRocket. Not evaluated: the
+> pooled outputs, and characteristics beyond price.
+
 **Stage:** todo — needs a build contract before implementation · **Priority:** 3 · **Home:** Panelary
 
 ## Pitch

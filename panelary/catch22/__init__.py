@@ -16,11 +16,15 @@ series (mean 0, standard deviation 1, using the sample standard deviation with
 ``ddof=1``) before computing.  Z-scoring is idempotent, so the feature functions
 are safe to call directly on raw data.
 
-Two convenience entry points are provided:
+Three convenience entry points are provided:
 
 * :func:`catch22_all` -- compute all 22 features (or 24 with ``catch24=True``,
   which appends the raw mean and standard deviation) for a single 1-D array,
   returning a ``dict[str, float]``.
+* :func:`catch22_batch` -- the same features for every row of an
+  ``(n_windows, L)`` array in one vectorised pass (each row's result depends
+  only on that row). Every scalar feature function is a thin wrapper over the
+  batched kernel, so the two cannot disagree.
 * :func:`catch22_features` -- a Polars-friendly entry point that computes the
   features **per entity** on a (long-format) panel :class:`polars.DataFrame` /
   :class:`polars.LazyFrame`, returning one row per entity.  The per-entity
@@ -51,6 +55,7 @@ from panelary.catch22._catalogue import (
     _resolve_names,
     catch22_all,
     catch22_all_expr,
+    catch22_batch,
     catch22_features,
 )
 from panelary.catch22._features import (
@@ -102,6 +107,7 @@ __all__ = [
     "CATCH22_NAMES",
     "CATCH24_EXTRA_NAMES",
     "catch22_all",
+    "catch22_batch",
     "catch22_features",
     "catch22_all_expr",
     # individual features

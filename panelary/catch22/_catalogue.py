@@ -12,6 +12,7 @@ from collections.abc import Sequence
 import numpy as np
 import polars as pl
 
+from ._batch import catch22_rows
 from ._features import (
     CO_Embed2_Dist_tau_d_expfit_meandiff,
     CO_f1ecac,
@@ -93,18 +94,43 @@ def _resolve_names(which, catch24: bool) -> list[str]:
 
 def _compute(x: np.ndarray, names: Sequence[str]) -> dict[str, float]:
     x = _as_1d(x)
-    out: dict[str, float] = {}
-    for name in names:
-        if name == "DN_Mean":
-            out[name] = float(x.mean()) if x.size else np.nan
-        elif name == "DN_Spread_Std":
-            out[name] = float(x.std(ddof=1)) if x.size > 1 else np.nan
-        else:
-            try:
-                out[name] = float(CATCH22_FUNCS[name](x))
-            except Exception:
-                out[name] = np.nan
-    return out
+    values = catch22_rows(x[None, :], names)[0]
+    return {name: float(v) for name, v in zip(names, values, strict=True)}
+
+
+def catch22_batch(X, *, which="all", catch24: bool = False) -> np.ndarray:
+    """Compute catch22 (or catch24) for every row of a 2-D array in one pass.
+
+    The batched counterpart of :func:`catch22_all`: the same features, the same
+    per-feature NaN-on-failure contract, but computed with one set of NumPy
+    calls for the whole batch instead of one per window. This is what makes
+    catch22 usable as an embedding over rolling windows.
+
+    Parameters
+    ----------
+    X : array-like
+        ``(n_windows, L)`` array; each row is one series. 1-D input is treated
+        as a single row. A row containing NaN is computed on its NaN-dropped
+        values, exactly like :func:`catch22_all`.
+    which : {"all"} or list of str, default "all"
+        ``"all"`` for the canonical 22 features, or an explicit list of names.
+    catch24 : bool, default False
+        When ``which="all"``, also emit ``DN_Mean`` and ``DN_Spread_Std``.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_windows, n_features)`` float64, columns in canonical order (see
+        :data:`CATCH22_NAMES`). Row ``i`` depends only on ``X[i]`` -- never on
+        which other rows share the batch -- and equals ``catch22_all(X[i])``.
+
+    Raises
+    ------
+    ValueError
+        If ``X`` is not 1-D or 2-D, or ``which`` names an unknown feature.
+    """
+    names = _resolve_names(which, catch24)
+    return catch22_rows(X, names)
 
 
 def catch22_all(x, *, catch24: bool = False) -> dict[str, float]:

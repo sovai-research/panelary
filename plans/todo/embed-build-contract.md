@@ -1,5 +1,29 @@
 # `panelary/embed/` — build contract
 
+> **Status (2026-09-28): partially implemented.** Every module in section 2 exists and
+> is tested, and all are exported from `panelary.embed`. Wave 1: `_intervals`,
+> `_contract`, `_quant`, `_c22i`, `_rff`, `_compress`. Wave 2: `_probe`, `_xs`;
+> `_rocket` and `_cross_rocket` were built by their own owner. Wave 3: `_hydra`,
+> `_sketch`, `_diagnostics`. The section 3.1 catch22 batch rewrite has landed: measured
+> ~12,000 windows/s at L=128. The earlier agent measured the scalar path before it at
+> ~240 windows/s, not the 10.2 recorded in section 1.1. The stateless, leakage and prefix-invariance suites
+> of section 8 are green, and a deliberately leaky variant of every transform fails
+> them. **Outstanding:**
+> - Section 8's accuracy benchmarks are unmeasured: linear-probe AUROC, k-NN recall,
+>   robustness and out-of-domain transfer. So is RSS at 10^6 windows.
+> - No `FeatureSpec` is registered, because the conformance suite only knows
+>   `ts` / `panel` / `xs`.
+> - The per-method `NOTICE` paragraphs, the top-level export, the CHANGELOG entry and
+>   the mkdocs nav are with the orchestrator.
+>
+> **Deliberate deviations:**
+> - `svd` in `_compress` is `RandomizedPCA(standardize=False)`: centred, unscaled.
+> - Hydra runs per trailing window (valid convolutions, `np.bincount` tallies)
+>   rather than the cumsum trick.
+> - The RFF scaler and bandwidth are expanding by-date schedules over the fitted rows.
+> - The `Embedder` protocol does not require `get_state()`, because the two rocket
+>   classes do not provide it.
+
 Fast, CPU-only, **leak-safe numerical embeddings** for panel data — the numerical
 analogue of model2vec static text embeddings. Issued to the implementation
 agents 2026-09-09.
