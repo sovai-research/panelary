@@ -108,6 +108,15 @@ try:
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
     _shape = None  # type: ignore[assignment]
 
+# `panelary.covariance` is a lazy submodule with a lazy initialiser, exactly like
+# `shape`: its frame operations register the first time a public name is read.
+try:
+    import panelary.covariance as _cov
+
+    _cov.avg_correlation  # noqa: B018 - the first access registers the catalogue
+except Exception:  # noqa: BLE001 - an import failure just means fewer specs
+    _cov = None  # type: ignore[assignment]
+
 
 # --------------------------------------------------------------------------- #
 # Probe panel
@@ -306,6 +315,40 @@ _FRAME_OPS.update(
     {name: _shape_op(factory) for name, (_r, factory) in _SHAPE_FRAME_OPS.items()}
 )
 
+#: ``panelary.covariance`` frame operations, as ``name -> (rendering, op)``.
+#: Each returns one row per date (or panel rows, for ``kelly_jiang_beta``); the
+#: per-date forms run with ``broadcast=True`` so the result is joined back onto
+#: the probe panel's ``(entity, time)`` keys the verifiers compare on. Windows
+#: are at most 5 dates (the shortest entity has 12 rows), and the tail
+#: fractions are raised so six names a date still produce non-null values.
+_COV_KEYS: dict[str, Any] = {"entity": ENTITY, "time": TIME}
+_COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
+    {}
+    if _cov is None
+    else {
+        "avg_correlation": (
+            "avg_correlation(returns='x', window=5, broadcast=True)",
+            lambda f: _cov.avg_correlation(
+                f, returns=VALUE, window=5, broadcast=True, **_COV_KEYS
+            ),
+        ),
+        "common_idio_vol": (
+            "common_idio_vol(returns='x', window=4, fit_window=5, refit_every=3, "
+            "broadcast=True)",
+            lambda f: _cov.common_idio_vol(
+                f,
+                returns=VALUE,
+                window=4,
+                fit_window=5,
+                refit_every=3,
+                broadcast=True,
+                **_COV_KEYS,
+            ),
+        ),
+    }
+)
+_FRAME_OPS.update({name: op for name, (_r, op) in _COVARIANCE_FRAME_OPS.items()})
+
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
 #: operator that does not hand back a panel cannot be checked by them.
@@ -449,6 +492,8 @@ def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
+    if spec.name in _COVARIANCE_FRAME_OPS:
+        return f"panelary.covariance.{_COVARIANCE_FRAME_OPS[spec.name][0]}"
     if spec.name in _FRAME_OPS:
         return f"panelary.factor.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
@@ -886,6 +931,10 @@ _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
         "xs_tail_index",
         "xs_up_share",
         "xs_entropy",
+        # Covariance frame operations: per-date co-movement and distribution
+        # features of the whole cross-section (plan covariance-and-market-state).
+        "avg_correlation",
+        "common_idio_vol",
     }
 )
 
