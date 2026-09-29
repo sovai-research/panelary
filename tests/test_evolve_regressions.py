@@ -421,3 +421,35 @@ class TestSummaryVerdictOnARealSignal:
         assert found.ledger["verdict"] == "PASS", found.ledger["reason"]
         assert null.ledger["verdict"] != "PASS", null.ledger["reason"]
         assert "null calibrated on" in found.summary()
+
+
+class TestTopLevelAccess:
+    """B11: ``pn.evolve`` raised ``AttributeError`` until ``import panelary.evolve``.
+
+    ``evolve`` was in neither the eager imports nor ``_LAZY_SUBMODULES``, so
+    the documented ``pn.evolve.evolve_features(...)`` failed on a fresh import.
+    It is lazy: ``import panelary`` must still not load it.
+    """
+
+    PROBE = (
+        "import sys, panelary as pn\n"
+        "assert 'panelary.evolve' not in sys.modules, 'evolve imported eagerly'\n"
+        "assert 'evolve' in dir(pn)\n"
+        "assert callable(pn.evolve.evolve_features)\n"
+        "assert 'panelary.evolve' in sys.modules\n"
+    )
+
+    def test_pn_evolve_resolves_lazily_on_a_fresh_import(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.run(
+            [sys.executable, "-c", self.PROBE],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo,
+        )
+        assert proc.returncode == 0, proc.stderr

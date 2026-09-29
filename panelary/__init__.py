@@ -397,12 +397,14 @@ else:
 #:   embed        ~5 ms, but it builds on `shape`'s windowing and projection
 #:                modules, and `import panelary` promises to load no shape
 #:                transform (tests/test_shape_leak_safety.py)
+#:   evolve       ~7-10 ms, and it registers its 52 operator FeatureSpecs,
+#:                which a light `import panelary` has no reason to carry
 #:
 #: They resolve on first attribute access via the PEP 562 hook below, so
 #: ``pn.forecasting`` works without making every ``import panelary``
 #: pay for it. They are deliberately absent from ``__all__`` so that
 #: ``from panelary import *`` cannot trigger a heavy or failing import.
-_LAZY_SUBMODULES = ("forecasting", "llm", "plotting", "backtesting", "embed")
+_LAZY_SUBMODULES = ("forecasting", "llm", "plotting", "backtesting", "embed", "evolve")
 
 
 def __getattr__(name: str):
