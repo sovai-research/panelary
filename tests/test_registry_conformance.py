@@ -74,6 +74,9 @@ import panelary  # noqa: F401  -- registers the ts / xs / panel / factor specs
 from panelary.core.panel_frame import PanelFrame
 from panelary.factor import forward_return as _factor_forward_return
 from panelary.factor import orthogonalize as _factor_orthogonalize
+from panelary.label import excess_over_median as _label_excess_over_median
+from panelary.label import quantile_label as _label_quantile_label
+from panelary.label import trend_scanning as _label_trend_scanning
 from panelary.registry import (
     VALID_SAFE_SCOPES,
     FeatureRegistry,
@@ -204,6 +207,7 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "rolling_dcor": ((AUX,), {"window": 5}),
     "rolling_tail_dep": ((AUX,), {"window": 10, "q": 0.2}),
     "rolling_gcmi": ((AUX,), {"window": 6}),
+    "trend_scan": ((), {"min_window": 3, "max_window": 8}),
 }
 
 
@@ -217,12 +221,44 @@ def _forward_return_op(frame: Any) -> Any:
     return _factor_forward_return(frame, entity=ENTITY, time=TIME, ret=VALUE, horizon=1)
 
 
-#: Frame-shaped operators (``namespace="factor"``) that preserve the
-#: ``(entity, time)`` keys, and so can still be driven through the verifiers as
-#: ``frame -> frame`` callables.
+# -- plan 4 (M3) forward labels: window scope, driven for the evidence of s.4.
+# `log=False` because the probe values cross zero; windows fit the 12-row entity.
+def _trend_scanning_op(frame: Any) -> Any:
+    """``label.trend_scanning`` bound to the probe panel's columns."""
+    return _label_trend_scanning(
+        frame,
+        entity=ENTITY,
+        time=TIME,
+        price=VALUE,
+        min_window=3,
+        max_window=6,
+        log=False,
+    )
+
+
+def _excess_over_median_op(frame: Any) -> Any:
+    """``label.excess_over_median`` bound to the probe panel's columns."""
+    return _label_excess_over_median(
+        frame, entity=ENTITY, time=TIME, price=VALUE, horizon=2, min_count=2
+    )
+
+
+def _quantile_label_op(frame: Any) -> Any:
+    """``label.quantile_label`` bound to the probe panel's columns."""
+    return _label_quantile_label(
+        frame, entity=ENTITY, time=TIME, price=VALUE, horizon=2
+    )
+
+
+#: Frame-shaped operators (``namespace="factor"`` / ``"label"``) that preserve
+#: the ``(entity, time)`` keys, and so can still be driven through the verifiers
+#: as ``frame -> frame`` callables.
 _FRAME_OPS: dict[str, Callable[[Any], Any]] = {
     "orthogonalize": _orthogonalize_op,
     "forward_return": _forward_return_op,
+    "trend_scanning": _trend_scanning_op,
+    "excess_over_median": _excess_over_median_op,
+    "quantile_label": _quantile_label_op,
 }
 
 
@@ -438,7 +474,7 @@ def _call(spec: FeatureSpec) -> str:
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
     if spec.name in _FRAME_OPS:
-        return f"panelary.factor.{spec.name}(<probe panel>)"
+        return f"panelary.{spec.namespace}.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
         op = _evolve_descriptor(spec)
         if op is None:  # pragma: no cover - only when the Op has gone missing
@@ -861,7 +897,17 @@ def test_window_evidence_coverage_is_accounted_for() -> None:
 #: a date on purpose, which is the whole point of a cross-sectional operator.
 #: Pinned rather than waved through, so a new entry has to be justified.
 _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
-    {"demean", "rank", "standardize", "ic", "orthogonalize", "portfolio_sort"}
+    {
+        "demean",
+        "rank",
+        "standardize",
+        "ic",
+        "orthogonalize",
+        "portfolio_sort",
+        # plan 4 M3: labels relative to the date's cross-section (median / rank)
+        "excess_over_median",
+        "quantile_label",
+    }
 )
 
 
