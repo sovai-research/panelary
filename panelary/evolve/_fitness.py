@@ -1969,6 +1969,20 @@ class PanelEvaluator:
 
         Feed the result to :func:`null_threshold` together with the real scores.
         """
+        results = self._noise_results(
+            n_shuffled=n_shuffled, n_gaussian=n_gaussian, seed=seed
+        )
+        return np.array([r.score for r in results], dtype=np.float64)
+
+    def _noise_results(
+        self, *, n_shuffled: int, n_gaussian: int, seed: int | None = None
+    ) -> list[FitnessResult]:
+        """Noise individuals scored through the identical path, in full.
+
+        :meth:`noise_scores` keeps only the aggregate; the search also needs
+        each decoy's per-case series, to calibrate the null the trial ledger
+        deflates against.
+        """
         base = (
             self._lf.select([pl.col(c).cast(pl.Float64) for c in self.ctx.base_columns])
             .collect()
@@ -1983,14 +1997,14 @@ class PanelEvaluator:
             seed=self.seed if seed is None else seed,
         )
         if noise.shape[1] == 0:
-            return np.empty(0, dtype=np.float64)
+            return []
         saved = self.halving
         self.halving = False  # every noise individual must see every fold
         try:
             results, _ = self.score_matrix(noise)
         finally:
             self.halving = saved
-        return np.array([r.score for r in results], dtype=np.float64)
+        return results
 
     def calibrate(
         self,

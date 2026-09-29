@@ -160,6 +160,23 @@ def _moments(series: np.ndarray) -> tuple[float, float]:
     return m3 / m2**1.5, m4 / m2**2
 
 
+def _null_second_moment(values: np.ndarray | None) -> tuple[float | None, int]:
+    """Null variance from zero-skill decoy statistics: ``(E[x^2], k)``.
+
+    The second moment about **zero**, not the sample variance: a zero-skill
+    statistic has mean zero by construction, so this spends no degree of
+    freedom on estimating it, and any bias the scoring path adds to the null
+    is charged to the variance rather than silently absorbed. ``None`` when
+    fewer than two finite values were given.
+    """
+    if values is None:
+        return None, 0
+    x = _finite(np.asarray(values, dtype=np.float64).ravel())
+    if x.size < 2:
+        return None, int(x.size)
+    return float(np.mean(x * x)), int(x.size)
+
+
 # --------------------------------------------------------------------------- #
 # TrialLedger
 # --------------------------------------------------------------------------- #
@@ -719,8 +736,27 @@ class TrialLedger:
         )
 
     # -- reporting ---------------------------------------------------------- #
-    def summary(self) -> dict[str, float | str]:
+    def summary(
+        self,
+        *,
+        null_scores: np.ndarray | None = None,
+        null_series: np.ndarray | None = None,
+    ) -> dict[str, float | str]:
         """The full honest report, with a PASS/FAIL verdict.
+
+        Parameters
+        ----------
+        null_scores : ndarray of shape (k,), optional
+            Scores of ``k`` zero-skill decoys pushed through the *identical*
+            scoring path, on the scale of the recorded scores. When given (at
+            least two finite), the null variance behind
+            ``expected_max_under_null`` is their second moment about zero,
+            instead of the variance of the recorded scores across trials.
+        null_series : ndarray of shape (k, T), optional
+            The same decoys' per-period series. When given, the DSR deflates
+            the best candidate's per-observation Sharpe against the decoys'
+            Sharpe variance -- the same scale -- instead of against the
+            variance of the recorded scores.
 
         Returns
         -------
@@ -728,7 +764,8 @@ class TrialLedger:
             ``n_trials`` (M), ``n_independent_trials`` (N_hat),
             ``mean_pairwise_correlation`` (rho_bar), ``score_variance`` (V),
             ``best_score``, ``best_sharpe``, ``expected_max_under_null``,
-            ``deflated_sharpe``, ``pbo``, ``verdict`` and ``reason``.
+            ``deflated_sharpe``, ``pbo``, ``null_source``, ``verdict`` and
+            ``reason``.
 
         Notes
         -----
@@ -743,17 +780,37 @@ class TrialLedger:
 
         A missing ingredient (no series recorded, ``M < 2``) yields
         ``INCONCLUSIVE``, never ``PASS``.
+
+        **Pass decoys whenever the population may contain real signal.** The
+        cross-trial variance ``V`` is the null variance only if *every* trial
+        is zero-skill. A search that finds a signal breeds a population of its
+        variants, so ``V`` then measures the gap between signal-carrying and
+        signal-free formulas and the "null" bar rises with the signal itself:
+        a planted signal scoring IC 0.53 was failed against a bar of 0.68.
+        Decoys estimate the null variance under the null, which is the only
+        place a null distribution can be estimated from.
         """
         m = self._n
         v = self.score_variance
         rho = self.mean_pairwise_correlation()
         n_hat = self.implied_independent_trials()
+        v_null, n_null = _null_second_moment(null_scores)
+        sharpe_null, _ = _null_second_moment(
+            None
+            if null_series is None
+            else np.asarray(
+                [_sharpe_of(row) for row in np.atleast_2d(null_series)],
+                dtype=np.float64,
+            )
+        )
         e_max = (
-            expected_maximum_sharpe(max(1, int(round(n_hat))), v)
+            expected_maximum_sharpe(
+                max(1, int(round(n_hat))), v if v_null is None else v_null
+            )
             if m >= 2
             else float("nan")
         )
-        dsr = self.deflated_sharpe()
+        dsr = self.deflated_sharpe(sharpe_variance=sharpe_null)
         pbo = self.pbo()
         best = self.best_score
         best_sharpe = (
@@ -807,6 +864,9 @@ class TrialLedger:
             "expected_max_under_null": float(e_max),
             "deflated_sharpe": float(dsr),
             "pbo": float(pbo),
+            "null_source": (
+                "cross-trial variance" if v_null is None else f"{n_null} decoys"
+            ),
             "verdict": verdict,
             "reason": reason,
         }

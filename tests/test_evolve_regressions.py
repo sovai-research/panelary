@@ -258,3 +258,98 @@ class TestHoldoutCheck:
             )
         assert diag["verdict"].startswith("HOLDOUT FAILED")
         assert "ComputeError" in diag["holdout_error"]
+
+
+class TestSummaryVerdictOnARealSignal:
+    """Bug: ``TrialLedger.summary`` failed a genuine signal.
+
+    ``expected_max_under_null`` was ``sqrt(V) * f(N_hat)`` with ``V`` the
+    variance of the recorded scores *across trials*. That is the null variance
+    only if no trial has skill. A search that finds a signal breeds variants of
+    it, so ``V`` measured the gap between signal-carrying and signal-free
+    formulas and the bar rose with the signal: the external run failed a
+    planted signal scoring IC 0.53 against a bar of 0.68. The DSR had the
+    converse defect: it deflated a per-case Sharpe against the variance of mean
+    ICs, a smaller scale, so it was lenient. Both now use decoys scored through
+    the identical path.
+    """
+
+    N_CASES = 120
+
+    def _ledger(self, rng: np.random.Generator, *, skilled_every: int) -> TrialLedger:
+        ledger = TrialLedger(seed=0)
+        for i in range(300):
+            skill = 0.4 if skilled_every and i % skilled_every == 0 else 0.0
+            series = skill + 0.1 * rng.standard_normal(self.N_CASES)
+            ledger.record(i, float(series.mean()), series)
+        return ledger
+
+    def test_the_null_is_not_inflated_by_signal_carrying_trials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(TrialLedger, "pbo", lambda self, **_: 0.0)
+        rng = np.random.default_rng(0)
+        ledger = self._ledger(rng, skilled_every=3)
+        decoys = 0.1 * rng.standard_normal((20, self.N_CASES))
+
+        legacy = ledger.summary()  # no decoys: the cross-trial fallback
+        assert legacy["verdict"] == "FAIL"
+        assert "expected max under the null" in legacy["reason"]
+        assert legacy["expected_max_under_null"] > 0.4  # the signal raised the bar
+
+        fixed = ledger.summary(null_scores=decoys.mean(axis=1), null_series=decoys)
+        assert fixed["null_source"] == "20 decoys"
+        assert fixed["expected_max_under_null"] < 0.05
+        assert fixed["deflated_sharpe"] > 0.95
+        assert fixed["verdict"] == "PASS", fixed["reason"]
+
+    def test_decoys_do_not_let_noise_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(TrialLedger, "pbo", lambda self, **_: 0.0)
+        rng = np.random.default_rng(1)
+        ledger = self._ledger(rng, skilled_every=0)
+        decoys = 0.1 * rng.standard_normal((20, self.N_CASES))
+        out = ledger.summary(null_scores=decoys.mean(axis=1), null_series=decoys)
+        assert out["verdict"] == "FAIL", out["reason"]
+        assert out["deflated_sharpe"] < 0.95
+
+    def test_search_passes_a_planted_signal_and_fails_its_control(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # PBO is pinned to a pass so that the verdict turns on the null alone:
+        # the control must fail on E[max] / DSR, without PBO's help.
+        monkeypatch.setattr(TrialLedger, "pbo", lambda self, **_: 0.0)
+        frame = _planted()
+        # 240 trials: enough that the search breeds variants of the signal,
+        # which is what inflated the cross-trial variance.
+        cfg = evolve.EvolveConfig(
+            population=40, generations=3, n_islands=2, max_library=5, seed=0
+        )
+        control = frame.with_columns(pl.col("fwd").shuffle(seed=5).alias("fwd"))
+        found, null = (
+            evolve.evolve_features(
+                panel, target="fwd", entity="entity", time="time", config=cfg
+            ).ledger
+            for panel in (frame, control)
+        )
+        assert found["verdict"] == "PASS", found["reason"]
+        assert found["best_score"] > found["expected_max_under_null"]
+        assert null["verdict"] == "FAIL", null["reason"]
+
+    @pytest.mark.slow
+    def test_search_verdicts_with_the_real_pbo(self) -> None:
+        frame = _planted()
+        cfg = evolve.EvolveConfig(
+            population=20, generations=2, n_islands=1, max_library=5, seed=0
+        )
+        control = frame.with_columns(pl.col("fwd").shuffle(seed=5).alias("fwd"))
+        found, null = (
+            evolve.evolve_features(
+                panel, target="fwd", entity="entity", time="time", config=cfg
+            )
+            for panel in (frame, control)
+        )
+        assert found.ledger["verdict"] == "PASS", found.ledger["reason"]
+        assert null.ledger["verdict"] != "PASS", null.ledger["reason"]
+        assert "null calibrated on" in found.summary()

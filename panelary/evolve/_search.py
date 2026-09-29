@@ -88,8 +88,13 @@ class EvolveConfig:
     migration_every, reset_every : int or None
         Ring migration and island-reset cadences, in generations.
     noise_features : int
-        Number of shuffled/Gaussian decoys injected as an in-run null. A
-        candidate must beat the best *decoy*, not merely beat zero.
+        Number of zero-skill decoys (half within-date shuffles of the base
+        columns, half Gaussian) scored through the identical path once the
+        search ends. Their spread is the null variance behind the ledger's
+        ``expected_max_under_null`` and DSR, so the winner must beat what
+        ``N_hat`` *decoys* would reach, not merely zero. Set to 0 to fall
+        back to the cross-trial variance, which fails real signals: once the
+        population carries a signal, that variance measures the signal.
     max_library : int
         Cap on the returned decorrelated pool.
     holdout_frac : float
@@ -179,6 +184,7 @@ class EvolveResult:
             f"best raw score           : {led.get('best_score', 'n/a')}",
             f"deflated Sharpe (DSR)    : {led.get('deflated_sharpe', 'n/a')}",
             f"E[max] under the null    : {led.get('expected_max_under_null', 'n/a')}",
+            f"null calibrated on       : {led.get('null_source', 'n/a')}",
             f"P(backtest overfit)      : {led.get('pbo', 'n/a')}",
             f"verdict                  : {led.get('verdict', 'n/a')}",
             f"reason                   : {led.get('reason', '')}",
@@ -431,7 +437,23 @@ def evolve_features(
         archive, holdout_lf, ctx, target=target, seed=cfg.seed
     )
     diagnostics.setdefault("n_search_candidates", len(is_scores))
-    summary = ledger.summary()
+    # The null the ledger deflates against. Without decoys it falls back to
+    # the variance of the trials' own scores, which is the null variance only
+    # if no trial has skill -- once the search breeds variants of a real
+    # signal, that variance measures the signal and the bar rises with it.
+    decoys = (
+        evaluator._noise_results(
+            n_shuffled=cfg.noise_features - cfg.noise_features // 2,
+            n_gaussian=cfg.noise_features // 2,
+            seed=cfg.seed,
+        )
+        if cfg.noise_features > 0
+        else []
+    )
+    summary = ledger.summary(
+        null_scores=np.asarray([d.score for d in decoys], dtype=np.float64),
+        null_series=(np.vstack([d.per_case for d in decoys]) if decoys else None),
+    )
     summary["n_failed_evaluations"] = n_failed
     return EvolveResult(
         library=library,
