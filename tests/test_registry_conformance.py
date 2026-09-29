@@ -113,6 +113,15 @@ try:
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
     _shape = None  # type: ignore[assignment]
 
+# `panelary.covariance` is a lazy submodule with a lazy initialiser, exactly like
+# `shape`: its frame operations register the first time a public name is read.
+try:
+    import panelary.covariance as _cov
+
+    _cov.avg_correlation  # noqa: B018 - the first access registers the catalogue
+except Exception:  # noqa: BLE001 - an import failure just means fewer specs
+    _cov = None  # type: ignore[assignment]
+
 
 # --------------------------------------------------------------------------- #
 # Probe panel
@@ -194,7 +203,15 @@ _OVER_KEY: dict[str, str] = {"ts": ENTITY, "panel": ENTITY, "xs": TIME}
 #: Registry names that differ from the namespace method name. The registry keys
 #: specs by bare ``name``, so the cross-sectional z-score is registered as
 #: ``cs_zscore`` while the method stays ``.xs.zscore``.
-_METHOD_ALIASES: dict[str, str] = {"cs_zscore": "zscore"}
+_METHOD_ALIASES: dict[str, str] = {
+    "cs_zscore": "zscore",
+    # Cross-sectional distribution summaries (plan covariance-and-market-state
+    # section 4.4): registered with an ``xs_`` prefix, called without it.
+    "xs_dispersion": "dispersion",
+    "xs_tail_index": "tail_index",
+    "xs_up_share": "up_share",
+    "xs_entropy": "entropy",
+}
 
 #: Arguments synthesised for operators with required parameters. Anything not
 #: listed here and not defaulted is skipped with a reason rather than guessed.
@@ -210,6 +227,10 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "rolling_tail_dep": ((AUX,), {"window": 10, "q": 0.2}),
     "rolling_gcmi": ((AUX,), {"window": 6}),
     "trend_scan": ((), {"min_window": 3, "max_window": 8}),
+    # Six names per date: q=0.5 gives k=3 exceedances, so the Hill value is
+    # non-null on the probe panel instead of vacuously null (the default
+    # q=0.05 needs 200 names per date).
+    "xs_tail_index": ((), {"q": 0.5, "min_exceedances": 2}),
 }
 
 
@@ -358,6 +379,76 @@ _FRAME_OPS.update(
     {name: _shape_op(factory) for name, (_r, factory) in _SHAPE_FRAME_OPS.items()}
 )
 
+#: ``panelary.covariance`` frame operations, as ``name -> (rendering, op)``.
+#: Each returns one row per date (or panel rows, for ``kelly_jiang_beta``); the
+#: per-date forms run with ``broadcast=True`` so the result is joined back onto
+#: the probe panel's ``(entity, time)`` keys the verifiers compare on. Windows
+#: are at most 5 dates (the shortest entity has 12 rows), and the tail
+#: fractions are raised so six names a date still produce non-null values.
+_COV_KEYS: dict[str, Any] = {"entity": ENTITY, "time": TIME}
+_COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
+    {}
+    if _cov is None
+    else {
+        "avg_correlation": (
+            "avg_correlation(returns='x', window=5, broadcast=True)",
+            lambda f: _cov.avg_correlation(
+                f, returns=VALUE, window=5, broadcast=True, **_COV_KEYS
+            ),
+        ),
+        "common_idio_vol": (
+            "common_idio_vol(returns='x', window=4, fit_window=5, refit_every=3, "
+            "broadcast=True)",
+            lambda f: _cov.common_idio_vol(
+                f,
+                returns=VALUE,
+                window=4,
+                fit_window=5,
+                refit_every=3,
+                broadcast=True,
+                **_COV_KEYS,
+            ),
+        ),
+        "kelly_jiang_tail": (
+            "kelly_jiang_tail(returns='x', window=3, q=0.25, min_exceedances=2, "
+            "broadcast=True)",
+            lambda f: _cov.kelly_jiang_tail(
+                f,
+                returns=VALUE,
+                window=3,
+                q=0.25,
+                min_exceedances=2,
+                broadcast=True,
+                **_COV_KEYS,
+            ),
+        ),
+        "kelly_jiang_beta": (
+            "kelly_jiang_beta(returns='x', window=5, tail_window=3, q=0.25, "
+            "min_exceedances=2)",
+            lambda f: _cov.kelly_jiang_beta(
+                f,
+                returns=VALUE,
+                window=5,
+                tail_window=3,
+                q=0.25,
+                min_exceedances=2,
+                **_COV_KEYS,
+            ),
+        ),
+        "xs_wasserstein": (
+            "xs_wasserstein(value='x', broadcast=True)",
+            lambda f: _cov.xs_wasserstein(f, value=VALUE, broadcast=True, **_COV_KEYS),
+        ),
+        "avg_skewness": (
+            "avg_skewness(returns='x', window=4, broadcast=True)",
+            lambda f: _cov.avg_skewness(
+                f, returns=VALUE, window=4, broadcast=True, **_COV_KEYS
+            ),
+        ),
+    }
+)
+_FRAME_OPS.update({name: op for name, (_r, op) in _COVARIANCE_FRAME_OPS.items()})
+
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
 #: operator that does not hand back a panel cannot be checked by them.
@@ -501,6 +592,8 @@ def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
+    if spec.name in _COVARIANCE_FRAME_OPS:
+        return f"panelary.covariance.{_COVARIANCE_FRAME_OPS[spec.name][0]}"
     if spec.name in _FRAME_OPS:
         return f"panelary.{spec.namespace}.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
@@ -935,6 +1028,20 @@ _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
         # plan 4 M3: labels relative to the date's cross-section (median / rank)
         "excess_over_median",
         "quantile_label",
+        # Cross-sectional distribution summaries: one value per date, from
+        # every name on that date (plan covariance-and-market-state 4.4).
+        "xs_dispersion",
+        "xs_tail_index",
+        "xs_up_share",
+        "xs_entropy",
+        # Covariance frame operations: per-date co-movement and distribution
+        # features of the whole cross-section (plan covariance-and-market-state).
+        "avg_correlation",
+        "common_idio_vol",
+        "kelly_jiang_tail",
+        "kelly_jiang_beta",
+        "xs_wasserstein",
+        "avg_skewness",
     }
 )
 
