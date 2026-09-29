@@ -114,6 +114,11 @@ def demean(
         ``offsets[g]`` has shape ``(n_levels[g], k)``: the accumulated mean
         removed for each level of dimension ``g``. Applying
         ``values - sum_g offsets[g][codes[g]]`` reproduces ``resid`` exactly.
+        A level with **no observation** (possible because ``n_levels`` may
+        exceed the levels present) has no identified offset and is ``NaN``,
+        so anything built from it -- e.g. an imputation estimator's
+        ``Y(0)`` for a period in which every unit is treated -- fails closed
+        instead of silently using an offset of zero.
     n_iter : int
         Number of sweeps performed.
     max_dev : float
@@ -125,6 +130,11 @@ def demean(
     more the convergence is linear in the "angle" between the dummy spaces; the
     tolerance above is what makes the resulting coefficients match a dense
     dummy-variable OLS to machine precision.
+
+    With two or more dimensions, even observed levels are identified only up
+    to a constant within each connected component of the levels'
+    co-occurrence graph: ``offsets[0][a] + offsets[1][b]`` is identified only
+    when ``a`` and ``b`` fall in the same component. That is not checked here.
     """
     arr = np.asarray(values, dtype=float)
     single = arr.ndim == 1
@@ -156,6 +166,13 @@ def demean(
             if n_dims == 1:
                 max_dev = 0.0
             break
+    # `group_mean` reports an empty group's mean as 0, so a level nobody
+    # observed would otherwise come back with an offset of exactly 0 -- a
+    # number, where the data identify none. No row carries such a level, so
+    # `resid` and every observed level's offset are untouched by this.
+    for g in range(n_dims):
+        seen = np.bincount(codes[g], minlength=int(n_levels[g])) > 0
+        offsets[g][~seen] = np.nan
     return (resid[:, 0] if single else resid), offsets, n_iter, max_dev
 
 

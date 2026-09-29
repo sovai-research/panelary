@@ -110,6 +110,59 @@ def test_demean_no_dimensions_is_identity():
 
 
 # --------------------------------------------------------------------------- #
+# B4: a level with no observation is unidentified, not "offset 0"
+# --------------------------------------------------------------------------- #
+def _staggered(n_units: int = 300, n_times: int = 40, *, seed: int = 0):
+    """Three adoption cohorts (t = 10 / 20 / 30), no never-treated unit.
+
+    Every unit is treated from t = 30, so the time effect of t >= 30 has no
+    untreated observation: an imputation estimator fitted on the untreated
+    cells cannot identify it.
+    """
+    rng = np.random.default_rng(seed)
+    unit = np.repeat(np.arange(n_units), n_times)
+    time = np.tile(np.arange(n_times), n_units)
+    adopt = np.array([10, 20, 30])[unit % 3]
+    treated = time >= adopt
+    alpha = rng.normal(size=n_units)[unit]
+    lam = np.linspace(0.0, 2.0, n_times)[time]
+    effect = 0.2 * (time - adopt + 1)
+    y = alpha + lam + np.where(treated, effect, 0.0) + rng.normal(size=unit.size)
+    return unit, time, treated, y
+
+
+def test_demean_leaves_levels_without_observations_unidentified():
+    unit, time, treated, y = _staggered()
+    fit = ~treated
+    resid, offsets, _, _ = demean(y[fit], [unit[fit], time[fit]], [300, 40])
+    empty_times = np.setdiff1d(np.arange(40), np.unique(time[fit]))
+    np.testing.assert_array_equal(empty_times, np.arange(30, 40))
+    assert np.isnan(offsets[1][empty_times]).all()
+    assert np.isfinite(offsets[1][:30]).all() and np.isfinite(offsets[0]).all()
+    # The naive imputation now fails closed on exactly the unidentified cells.
+    y0_hat = offsets[0][unit[treated], 0] + offsets[1][time[treated], 0]
+    np.testing.assert_array_equal(np.isnan(y0_hat), time[treated] >= 30)
+    assert np.isfinite(resid).all()
+
+
+def test_demean_identified_outputs_are_unchanged_by_empty_levels():
+    """Bit-identical to the same problem with the empty levels coded away."""
+    unit, time, treated, y = _staggered(seed=1)
+    fit = ~treated
+    u, t, v = unit[fit], time[fit], np.column_stack([y[fit], -2.0 * y[fit]])
+    resid, offsets, n_iter, max_dev = demean(v, [u, t], [300, 40])
+    present_t = np.unique(t)
+    t_compact = np.searchsorted(present_t, t)
+    ref_resid, ref_off, ref_iter, ref_dev = demean(
+        v, [u, t_compact], [300, present_t.size]
+    )
+    np.testing.assert_array_equal(resid, ref_resid)
+    np.testing.assert_array_equal(offsets[0], ref_off[0])
+    np.testing.assert_array_equal(offsets[1][present_t], ref_off[1])
+    assert (n_iter, max_dev) == (ref_iter, ref_dev)
+
+
+# --------------------------------------------------------------------------- #
 # Acceptance: exact match against dense dummy OLS
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("drop_frac", [0.0, 0.25])
