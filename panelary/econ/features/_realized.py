@@ -222,14 +222,32 @@ def _sparse_step(n: pl.Expr) -> pl.Expr:
     )
 
 
-def _k_step_increments(p: pl.Expr, k: pl.Expr | int) -> pl.Expr:
-    """``p_i - p_{i-k}`` for ``i >= k`` within the group, with ``p_0 = 0``.
+def _k_step_parts(p: pl.Expr, k: pl.Expr) -> tuple[pl.Expr, pl.Expr]:
+    """The ``k``-step increments ``p_i - p_{i-k}``, ``i >= k``, of a session.
 
     ``p`` holds the log price relative to the session's first price at the
     return rows ``1..M``, so the increment ending at return ``k`` reaches back
-    to the implicit ``p_0 = 0``. ``k`` may be a per-group expression.
+    to the implicit ``p_0 = 0``. Returns ``(later, first)``: the increments
+    ending at returns ``k+1..M`` (null before), and the first one, ``p_k``.
+    ``k`` is a per-group expression. Built without ``fill_null`` on the
+    shifted series, which polars 1.35's lazy engine rejects for a per-group
+    shift.
     """
-    return (p - p.shift(k).fill_null(0.0)).slice(k - 1)
+    return p - p.shift(k), p.slice(k - 1, 1).first()
+
+
+def _k_step_power_sum(p: pl.Expr, k: pl.Expr, power: int) -> pl.Expr:
+    """``sum_{i >= k} (p_i - p_{i-k})^power`` over the session."""
+    later, first = _k_step_parts(p, k)
+    if power == 2:
+        return (later * later).sum() + first * first
+    return (later**power).sum() + first**power
+
+
+def _k_step_nonzero(p: pl.Expr, k: pl.Expr) -> pl.Expr:
+    """Number of non-zero ``k``-step increments in the session."""
+    later, first = _k_step_parts(p, k)
+    return (later != 0).sum() + (first != 0).cast(pl.UInt32)
 
 
 def _gamma_aggs(kernel_max_lags: int) -> list[pl.Expr]:
@@ -282,16 +300,14 @@ def _raw_aggs(
         p = pl.col(_P)
         q = _dense_step(pl.len())
         kiv = _sparse_step(pl.len())
-        dq = _k_step_increments(p, q)
-        ds = _k_step_increments(p, kiv)
         aggs.extend(
             [
                 q.alias("__rm_q"),
-                (dq * dq).sum().alias("__rm_dq2"),
-                (dq != 0).sum().alias("__rm_nnzq"),
+                _k_step_power_sum(p, q, 2).alias("__rm_dq2"),
+                _k_step_nonzero(p, q).alias("__rm_nnzq"),
                 kiv.alias("__rm_kiv"),
-                (ds * ds).sum().alias("__rm_sp2"),
-                (ds**4).sum().alias("__rm_sp4"),
+                _k_step_power_sum(p, kiv, 2).alias("__rm_sp2"),
+                _k_step_power_sum(p, kiv, 4).alias("__rm_sp4"),
             ]
         )
     if tsrv_fixed_k is not None:
@@ -677,14 +693,13 @@ def intraday_realized_measures(
             pl.col("__rm_tsrv_k").is_not_null()
         )
         k_expr = pl.col("__rm_tsrv_k").first()
-        inc = _k_step_increments(pl.col(_P), k_expr)
         # `maintain_order="left"` keeps each session's rows in time order, which
         # the lagged increments below depend on.
         second = (
             clean.lazy()
             .join(with_k.lazy(), on=keys, how="inner", maintain_order="left")
             .group_by(keys)
-            .agg((inc * inc).sum().alias("__rm_tsk"))
+            .agg(_k_step_power_sum(pl.col(_P), k_expr, 2).alias("__rm_tsk"))
             .collect()
         )
         out = out.join(second, on=keys, how="left")
