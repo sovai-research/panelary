@@ -454,18 +454,16 @@ def romano_wolf(
 
     n_boot, n_hyp = boot_use.shape
     order = np.argsort(-t_use)  # most significant first
+    # Step j's critical distribution is the row-wise max over the hypotheses not
+    # yet rejected, order[j:], i.e. a *suffix* max of the columns in stepdown
+    # order: one reversed maximum.accumulate gives every step at once, O(B S)
+    # instead of the O(B S^2) loop (bitwise identical: max and counts are exact).
+    sorted_boot = boot_use[:, order]
+    suffix_max = np.maximum.accumulate(sorted_boot[:, ::-1], axis=1)[:, ::-1]
+    exceed = np.count_nonzero(suffix_max >= t_use[order][None, :], axis=0)
+    p_raw = (1.0 + exceed.astype(float)) / (n_boot + 1.0)
     adj = np.empty(n_hyp, dtype=float)
-    remaining = list(order)
-    running = 0.0
-    for j, h in enumerate(order):
-        cols = np.asarray(remaining, dtype=np.int64)
-        max_null = boot_use[:, cols].max(axis=1)
-        p_raw = (1.0 + float(np.count_nonzero(max_null >= t_use[h]))) / (n_boot + 1.0)
-        running = max(running, p_raw)
-        adj[h] = running
-        remaining = list(order[j + 1 :])
-        if not remaining:
-            break
+    adj[order] = np.maximum.accumulate(p_raw)
     return MultipleTestResult(adj <= alpha, adj, float(alpha), "romano-wolf")
 
 

@@ -85,6 +85,13 @@ from panelary.validation._forecast_tests import (
     score_quantile_forecasts,
     superior_predictive_ability,
 )
+
+# --- forecast evaluation & Sharpe inference (plan 1: fe-sharpe) --------------
+from panelary.validation._results import (
+    EVALUATION_SCHEMA,
+    EvaluationResult,
+    evaluation_table,
+)
 from panelary.validation._selection_stats import (
     MultipleTestResult,
     benjamini_hochberg,
@@ -98,6 +105,25 @@ from panelary.validation._selection_stats import (
     romano_wolf,
     romano_wolf_mean_test,
 )
+from panelary.validation._sharpe import (
+    BlockLengthCalibration,
+    annualize_sharpe,
+    sharpe_block_length,
+    sharpe_ratio_inference,
+    sharpe_ratio_test,
+)
+
+_FE_SHARPE_ALL = [
+    "BlockLengthCalibration",
+    "EVALUATION_SCHEMA",
+    "EvaluationResult",
+    "annualize_sharpe",
+    "evaluation_table",
+    "sharpe_block_length",
+    "sharpe_ratio_inference",
+    "sharpe_ratio_test",
+]
+# --- end fe-sharpe -------------------------------------------------------------
 
 __all__ = [
     "CVReport",
@@ -147,4 +173,5 @@ __all__ = [
     "walk_forward_backtest_path",
     "walk_forward_splits",
     "wild_bootstrap",
+    *_FE_SHARPE_ALL,
 ]
