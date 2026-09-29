@@ -174,6 +174,17 @@ except ImportError as exc:
 else:
     __all__ += ["label", "triple_barrier"]
 
+# --- plan 4 (M5/M6): bars (`sample`) -----------------------------------------
+# numpy + polars only; the optional numba kernels compile on first call, never
+# at import, so this is eager like `label` above.
+try:
+    from panelary import sample as sample
+except ImportError as exc:
+    _warn_unavailable("panelary.sample", exc)
+else:
+    __all__ += ["sample"]
+# --- end plan 4 (M5/M6) ---------------------------------------------------------
+
 # --- Models & feature selection subpackages ---------------------------------
 try:
     from panelary import models as models

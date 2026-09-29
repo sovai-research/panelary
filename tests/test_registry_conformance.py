@@ -84,6 +84,8 @@ from panelary.registry import (
     register_feature,
     registry,
 )
+from panelary.sample import bars as _sample_bars
+from panelary.sample import imbalance_bars as _sample_imbalance_bars
 from panelary.testing import assert_no_lookahead, assert_prefix_invariant
 
 # The `evolve` vocabulary registers 52 further specs, but only when
@@ -250,15 +252,41 @@ def _quantile_label_op(frame: Any) -> Any:
     )
 
 
-#: Frame-shaped operators (``namespace="factor"`` / ``"label"``) that preserve
-#: the ``(entity, time)`` keys, and so can still be driven through the verifiers
-#: as ``frame -> frame`` callables.
+# -- plan 4 (M5) bars: rowwise. One output row per completed bar, keyed by the
+# bar's last tick (a subset of the input keys, like `ic`'s one row per date), so
+# both verifiers compare the bars stamped at or before each cut. Tick bars on the
+# probe's value column (no size column is needed); a null price is dropped.
+def _bars_op(frame: Any) -> Any:
+    """``sample.bars`` (3-tick bars) bound to the probe panel's columns."""
+    return _sample_bars(
+        frame, entity=ENTITY, time=TIME, price=VALUE, kind="tick", threshold=3
+    )
+
+
+def _imbalance_bars_op(frame: Any) -> Any:
+    """``sample.imbalance_bars`` (tick imbalance) bound to the probe panel."""
+    return _sample_imbalance_bars(
+        frame,
+        entity=ENTITY,
+        time=TIME,
+        price=VALUE,
+        kind="tick",
+        init_expected_ticks=3,
+        span_bars=3,
+    )
+
+
+#: Frame-shaped operators (``namespace="factor"`` / ``"label"`` / ``"sample"``)
+#: whose output rows carry ``(entity, time)`` keys, and so can still be driven
+#: through the verifiers as ``frame -> frame`` callables.
 _FRAME_OPS: dict[str, Callable[[Any], Any]] = {
     "orthogonalize": _orthogonalize_op,
     "forward_return": _forward_return_op,
     "trend_scanning": _trend_scanning_op,
     "excess_over_median": _excess_over_median_op,
     "quantile_label": _quantile_label_op,
+    "bars": _bars_op,
+    "imbalance_bars": _imbalance_bars_op,
 }
 
 
