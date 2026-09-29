@@ -148,3 +148,43 @@ __all__ = [
     "walk_forward_splits",
     "wild_bootstrap",
 ]
+
+# --- Forecast evaluation (plan 1): calibration diagnostics (M2), VaR/ES -----
+# --- backtests (M4) and multivariate proper scores (M6) ----------------------
+from panelary.validation._calibration import (  # noqa: E402
+    CORPResult,
+    corp_reliability,
+    murphy_diagram,
+)
+from panelary.validation._multivariate_scores import (  # noqa: E402
+    energy_score,
+    variogram_score,
+)
+from panelary.validation._risk_backtest import (  # noqa: E402
+    PredictiveSpec,
+    acerbi_szekely_test,
+    christoffersen_test,
+    dynamic_quantile_test,
+    exceedances,
+    fz0_loss,
+    kupiec_test,
+    qlike_loss,
+    var_backtest,
+)
+
+__all__ += [
+    "CORPResult",
+    "PredictiveSpec",
+    "acerbi_szekely_test",
+    "christoffersen_test",
+    "corp_reliability",
+    "dynamic_quantile_test",
+    "energy_score",
+    "exceedances",
+    "fz0_loss",
+    "kupiec_test",
+    "murphy_diagram",
+    "qlike_loss",
+    "var_backtest",
+    "variogram_score",
+]
