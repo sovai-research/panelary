@@ -345,6 +345,42 @@ _COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
                 **_COV_KEYS,
             ),
         ),
+        "kelly_jiang_tail": (
+            "kelly_jiang_tail(returns='x', window=3, q=0.25, min_exceedances=2, "
+            "broadcast=True)",
+            lambda f: _cov.kelly_jiang_tail(
+                f,
+                returns=VALUE,
+                window=3,
+                q=0.25,
+                min_exceedances=2,
+                broadcast=True,
+                **_COV_KEYS,
+            ),
+        ),
+        "kelly_jiang_beta": (
+            "kelly_jiang_beta(returns='x', window=5, tail_window=3, q=0.25, "
+            "min_exceedances=2)",
+            lambda f: _cov.kelly_jiang_beta(
+                f,
+                returns=VALUE,
+                window=5,
+                tail_window=3,
+                q=0.25,
+                min_exceedances=2,
+                **_COV_KEYS,
+            ),
+        ),
+        "xs_wasserstein": (
+            "xs_wasserstein(value='x', broadcast=True)",
+            lambda f: _cov.xs_wasserstein(f, value=VALUE, broadcast=True, **_COV_KEYS),
+        ),
+        "avg_skewness": (
+            "avg_skewness(returns='x', window=4, broadcast=True)",
+            lambda f: _cov.avg_skewness(
+                f, returns=VALUE, window=4, broadcast=True, **_COV_KEYS
+            ),
+        ),
     }
 )
 _FRAME_OPS.update({name: op for name, (_r, op) in _COVARIANCE_FRAME_OPS.items()})
@@ -935,6 +971,10 @@ _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
         # features of the whole cross-section (plan covariance-and-market-state).
         "avg_correlation",
         "common_idio_vol",
+        "kelly_jiang_tail",
+        "kelly_jiang_beta",
+        "xs_wasserstein",
+        "avg_skewness",
     }
 )
 

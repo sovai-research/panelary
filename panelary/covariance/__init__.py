@@ -29,6 +29,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - static names for type checkers and IDEs
     # --- cov-xs block (plan 3: M3 co-movement subset, M4) ---------------- #
     from panelary.covariance._comovement import avg_correlation, common_idio_vol
+    from panelary.covariance._xsdist import (
+        avg_skewness,
+        kelly_jiang_beta,
+        kelly_jiang_tail,
+        xs_wasserstein,
+    )
     # --- end cov-xs block ------------------------------------------------- #
 
 #: Public name -> the private module that defines it.
@@ -45,9 +51,13 @@ _EXPORTS.update(
     {
         "avg_correlation": "_comovement",
         "common_idio_vol": "_comovement",
+        "avg_skewness": "_xsdist",
+        "kelly_jiang_beta": "_xsdist",
+        "kelly_jiang_tail": "_xsdist",
+        "xs_wasserstein": "_xsdist",
     }
 )
-_CATALOGUE_MODULES += ("_comovement",)
+_CATALOGUE_MODULES += ("_comovement", "_xsdist")
 # --- end cov-xs block ----------------------------------------------------- #
 
 __all__ = sorted(_EXPORTS)
