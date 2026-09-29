@@ -74,6 +74,7 @@ nav:
     - Numerical Embeddings: user-guide/embeddings.md
     - Validation: user-guide/validation.md
     - Honest Validation: user-guide/honest-validation.md
+    - Calibration & Risk Backtests: user-guide/calibration-and-risk-backtests.md
     - Econometrics: user-guide/econometrics.md
     - Econometric Features: user-guide/econ-features.md
     - Preprocessing: user-guide/preprocessing.md

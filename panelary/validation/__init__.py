@@ -148,3 +148,16 @@ __all__ = [
     "walk_forward_splits",
     "wild_bootstrap",
 ]
+
+# --- Forecast evaluation: calibration diagnostics (plan 1, M2) ---------------
+from panelary.validation._calibration import (  # noqa: E402
+    CORPResult,
+    corp_reliability,
+    murphy_diagram,
+)
+
+__all__ += [
+    "CORPResult",
+    "corp_reliability",
+    "murphy_diagram",
+]
