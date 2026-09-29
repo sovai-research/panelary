@@ -174,6 +174,38 @@ SE ≈ 0.004 at 5 %). The generator is `benchmarks/gr_critical_values.py` and
 
 One-time reversal, 5 %: 10.50 (trim 0.15), 10.08 (trim 0.20).
 
+## Luck versus skill across many strategies
+
+| Function | What it answers |
+|---|---|
+| `storey_pi0(p)` | share of true nulls `pi0` (Storey 2002; bootstrap choice of `lambda`, `O(B M)`) |
+| `benjamini_hochberg(p, pi0=est)` | adaptive BH / Storey q-values (`pi0=None` is plain BH, bitwise unchanged) |
+| `luck_versus_skill(t)` | Barras–Scaillet–Wermers: at each `gamma`, shares significant, expected lucky, truly skilled/unskilled, FDR by sign |
+| `alpha_bootstrap(r, factors)` | Fama–French (2010) cross-sectional bootstrap of `t(alpha)` quantiles, plus per-fund p-values |
+| `panelary.evolve.significance_hurdle(M)` | the Harvey–Liu–Zhu t-statistic hurdle for a test among `M` (Bonferroni, Holm, BHY) |
+
+**Why the joint-date bootstrap.** `alpha_bootstrap(scheme="joint_dates")` imposes zero
+alpha and resamples *dates* jointly for every fund and the factors, so the cross-fund
+correlation that makes extreme t-statistics easy to reach by chance is preserved.
+`scheme="residual"` (Kosowski et al. 2006) resamples each fund's residuals
+independently. Under a common factor missing from the model (150 funds, T = 120, 150
+replications, 95th-percentile test at nominal 5 %), the residual scheme rejected 16.7 %
+of the time and the joint-date scheme 4.0 % (`tests/test_validation_luck_skill.py`).
+
+The joint-date scheme runs on the count-matrix engine. Every per-fund regression
+ingredient (Gram entries, `X'y`, `y'y`, `n`, masked for unbalanced panels) is one BLAS
+product. The `B x N` small OLS systems are solved by one vectorised Cholesky, whose
+pivots also flag ill-conditioned replicates for an `lstsq` fallback. With
+`factors=None` it reproduces `evolve.cross_sectional_bootstrap`: the same indices,
+statistics to 1e-12 and identical p-values.
+
+**Hurdles.** `significance_hurdle(316, method="bonferroni")` is 3.78, HLZ's published
+value for 316 factors. Holm and BHY draw the other `M - 1` tests from the HLZ
+structural family, the same draw as `haircut_sharpe_ratio`. The hurdle is where the
+median adjusted p-value crosses `alpha`. At HLZ's structural `M = 1,377` (ρ = 0.2) the
+BHY hurdle is about 3.4. Note: `n_trials` here counts all tests *including* the one
+being assessed, while `haircut_sharpe_ratio`'s counts the others.
+
 ## Performance
 
 Reference machine: Apple Silicon, Python 3.13, NumPy 2.5 + Accelerate, single process,
@@ -190,6 +222,9 @@ shared with other jobs (so timings are upper bounds).
 | Romano–Wolf stepdown | S=1000, B=1000 | ≤ 20 ms | 5 ms (was 0.81 s) |
 | CW / R²_OS / MZ / PT / ENC / GW | T=5000, M=1000 | ≤ 0.3 s each | 0.10 / 0.19 / 0.08 / 0.04 / 0.11 / 0.17 s |
 | fluctuation (test / monitor), one-time reversal | P=5000, M=1000 | ≤ 0.3 s | 0.09 / 0.12 / 0.07 s |
+| Storey π₀ bootstrap | M=10⁴, B=1000 | ≤ 0.2 s | 0.05 s |
+| `alpha_bootstrap` FF2010, unbalanced | T=360, N=3000, K=3, B=1000 | ≤ 3 s | 2.3–2.9 s |
+| `significance_hurdle` (Holm + BHY) | M=1377, 2000 families | — | 0.6 s |
 
 ## References
 
@@ -208,3 +243,6 @@ shared with other jobs (so timings are upper bounds).
   *Econometrica* 74(6); Giacomini & Rossi (2010). *J. Applied Econometrics* 25(4);
   Andrews, D. W. K. (1993). Tests for parameter instability and structural change
   with unknown change point. *Econometrica* 61(4).
+- Storey, J. D. (2002). *JRSS-B* 64(3); Barras, Scaillet & Wermers (2010). *J. Finance*
+  65(1); Fama & French (2010). *J. Finance* 65(5); Kosowski, Timmermann, Wermers &
+  White (2006). *J. Finance* 61(6); Harvey, Liu & Zhu (2016). *RFS* 29(1).

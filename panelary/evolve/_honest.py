@@ -87,6 +87,7 @@ from typing import Any, Literal
 import numpy as np
 import polars as pl
 
+from panelary._internal import _special
 from panelary.core.model_selection import (
     _norm_cdf,
     _norm_ppf,
@@ -107,6 +108,7 @@ __all__ = [
     "haircut_sharpe_ratio",
     "minimum_backtest_length",
     "search_diagnostics",
+    "significance_hurdle",
 ]
 
 #: Euler-Mascheroni constant; the ``gamma`` of the expected-maximum formula.
@@ -1230,6 +1232,133 @@ def haircut_sharpe_ratio(
         out[f"{name}_sharpe"] = float(sr_adj)
         out[f"{name}_haircut"] = float(min(max((sr - sr_adj) / sr, 0.0), 1.0))
     return out
+
+
+def _hlz_family_pvalues(
+    m_others: int, rho: float, n_sim: int, seed: int | None
+) -> np.ndarray:
+    """``(n_sim, m_others)`` p-values of the other tests, drawn from the HLZ family.
+
+    The same structural model and the same per-family generator calls, in the
+    same order, as :func:`haircut_sharpe_ratio` (which is left untouched), so for
+    equal ``seed`` and family size both see identical families.
+    """
+    _, p0, lam = _hlz_params(rho)
+    r = min(max(float(rho), 0.0), 0.8)
+    nu_scale = lam * math.sqrt(_HLZ_N_OBS) / _HLZ_MONTHLY_VOL
+    rng = np.random.default_rng(seed)
+    sqrt_rho, sqrt_one_minus = math.sqrt(r), math.sqrt(1.0 - r)
+    out = np.empty((n_sim, m_others), dtype=np.float64)
+    for b in range(n_sim):
+        is_alt = rng.random(m_others) >= p0
+        nu = np.where(is_alt, rng.exponential(nu_scale, size=m_others), 0.0)
+        common = float(rng.standard_normal())
+        noise = sqrt_rho * common + sqrt_one_minus * rng.standard_normal(m_others)
+        out[b] = _two_sided_p(nu + noise)
+    return out
+
+
+def significance_hurdle(
+    n_trials: int,
+    *,
+    alpha: float = 0.05,
+    method: Literal["bonferroni", "holm", "bhy"] = "bhy",
+    rho: float = 0.2,
+    n_sim: int = 2000,
+    seed: int | None = 0,
+) -> float:
+    """The t-statistic a new test must clear among ``n_trials`` tests (HLZ 2016).
+
+    Harvey, Liu & Zhu's multiple-testing hurdle: the smallest ``|t|`` whose
+    multiplicity-adjusted p-value is at most ``alpha`` when the test is one of
+    ``n_trials`` in a family.
+
+    * ``"bonferroni"``: closed form ``t* = -Phi^{-1}(alpha / (2 M))``.
+    * ``"holm"`` / ``"bhy"``: the other ``M - 1`` tests are drawn from the HLZ
+      structural family (the same draw as :func:`haircut_sharpe_ratio`, with
+      common random numbers across candidate thresholds); the hurdle is where
+      the **median** adjusted p-value over ``n_sim`` families crosses
+      ``alpha``. Each family is sorted once; the adjusted p of an inserted
+      p-value ``p0`` at rank ``r`` is then O(1):
+      Holm ``max(prefmax_{r-1}, (M - r + 1) p0)`` and BHY
+      ``min(c(M) M p0 / r, sufmin_r)``. The median is monotone in ``p0``, so
+      bisection on ``t`` is exact to 1e-10.
+
+    Parameters
+    ----------
+    n_trials : int
+        Family size ``M``, **including** the test being assessed. (Note:
+        :func:`haircut_sharpe_ratio`'s ``n_trials`` counts the *other* tests.)
+    alpha : float, default 0.05
+    method : {"bhy", "holm", "bonferroni"}, default "bhy"
+    rho : float, default 0.2
+        Average correlation of test statistics (HLZ table, clipped to [0, 0.8]).
+    n_sim : int, default 2000
+        Simulated families; memory is ``O(n_sim * n_trials)``.
+    seed : int, optional
+
+    Returns
+    -------
+    float
+        The hurdle ``t*`` (two-sided).
+
+    Examples
+    --------
+    >>> round(significance_hurdle(10, method="bonferroni"), 4)
+    2.807
+    """
+    m = int(n_trials)
+    if m < 1:
+        raise ValueError(f"`n_trials` must be >= 1, got {n_trials}.")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"`alpha` must be in (0, 1), got {alpha}.")
+    if method not in ("bonferroni", "holm", "bhy"):
+        raise ValueError("`method` must be 'bonferroni', 'holm' or 'bhy'.")
+    if method == "bonferroni" or m == 1:
+        # the Halley-refined quantile: t* is compared at 1e-12 in the tests
+        return float(-_special.norm_ppf(alpha / (2.0 * m)))
+    if n_sim < 1:
+        raise ValueError(f"`n_sim` must be >= 1, got {n_sim}.")
+    q = np.sort(_hlz_family_pvalues(m - 1, rho, int(n_sim), seed), axis=1)
+    k = np.arange(1, m, dtype=np.float64)  # positions of the others in their own order
+    if method == "holm":
+        # merged rank j < r holds q_(j) with multiplier (M - j + 1)
+        prefmax = np.maximum.accumulate(q * (m - k + 1.0), axis=1)
+        table = np.concatenate([np.zeros((q.shape[0], 1)), prefmax], axis=1)
+    else:
+        c_m = float(np.sum(1.0 / np.arange(1, m + 1)))
+        # q_(k) sits at merged rank k + 1 when p0 is inserted before it
+        scaled = q * (c_m * m) / (k + 1.0)
+        sufmin = np.minimum.accumulate(scaled[:, ::-1], axis=1)[:, ::-1]
+        table = np.concatenate([sufmin, np.full((q.shape[0], 1), np.inf)], axis=1)
+        table_c = c_m
+    n_fam, width = q.shape
+    offsets = 2.0 * np.arange(n_fam)[:, None]
+    flat = (q + offsets).ravel()
+    fam = np.arange(n_fam)
+
+    def median_adjusted(t: float) -> float:
+        p0 = float(math.erfc(abs(t) / math.sqrt(2.0)))
+        below = np.searchsorted(flat, p0 + offsets[:, 0], side="left") - fam * width
+        r = below + 1  # rank of the inserted test (ties placed first)
+        if method == "holm":
+            adj = np.maximum(table[fam, r - 1], (m - r + 1.0) * p0)
+        else:
+            adj = np.minimum(table_c * m * p0 / r, table[fam, r - 1])
+        return float(np.median(np.minimum(adj, 1.0)))
+
+    lo, hi = 0.0, 40.0
+    if median_adjusted(lo) <= alpha:
+        return 0.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if median_adjusted(mid) <= alpha:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < 1e-10:
+            break
+    return float(hi)
 
 
 # --------------------------------------------------------------------------- #

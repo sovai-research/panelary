@@ -32,6 +32,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import SupportsFloat
 
 import numpy as np
 
@@ -314,7 +315,10 @@ def holm_bonferroni(
 
 
 def benjamini_hochberg(
-    pvalues: Sequence[float] | np.ndarray, *, alpha: float = 0.05
+    pvalues: Sequence[float] | np.ndarray,
+    *,
+    alpha: float = 0.05,
+    pi0: float | SupportsFloat | None = None,
 ) -> MultipleTestResult:
     """Benjamini-Hochberg (1995) false-discovery-rate control.
 
@@ -328,6 +332,12 @@ def benjamini_hochberg(
         Raw p-values.
     alpha : float, default=0.05
         Target FDR.
+    pi0 : float or Pi0Estimate, optional
+        Share of true nulls, e.g. from :func:`~panelary.validation.storey_pi0`.
+        Given, the adjusted p-values are Storey's q-values
+        ``min_{j >= i} pi0 m p_(j) / j`` (adaptive BH), which are smaller than
+        BH's by the factor ``pi0``. ``None`` (default) is plain BH, bitwise
+        unchanged.
 
     Returns
     -------
@@ -339,7 +349,14 @@ def benjamini_hochberg(
     >>> res.n_rejected
     2
     """
-    return _bh_family(pvalues, alpha=alpha, c_m=1.0, method="benjamini-hochberg")
+    if pi0 is None:
+        return _bh_family(pvalues, alpha=alpha, c_m=1.0, method="benjamini-hochberg")
+    share = float(pi0)
+    if not 0.0 < share <= 1.0:
+        raise ValueError(f"`pi0` must be in (0, 1], got {share}.")
+    return _bh_family(
+        pvalues, alpha=alpha, c_m=share, method=f"benjamini-hochberg(pi0={share:.4g})"
+    )
 
 
 def benjamini_yekutieli(

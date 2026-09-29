@@ -72,6 +72,7 @@ from ._honest import (
     haircut_sharpe_ratio,
     minimum_backtest_length,
     search_diagnostics,
+    significance_hurdle,
 )
 from ._ops import OPS, default_grammar, ops_by_kind
 from ._search import EvolveConfig, EvolveResult, evolve_features
@@ -114,6 +115,7 @@ __all__ = [
     "rank_ic",
     "search_diagnostics",
     "semantic_key",
+    "significance_hurdle",
     "subgraph_crossover",
     "to_infix",
     "turnover",
