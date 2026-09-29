@@ -208,10 +208,14 @@ __all__ = [
 from panelary.econ.features._realized import (  # noqa: E402
     intraday_realized_measures,
 )
+from panelary.econ.features._rough import (  # noqa: E402
+    RFSVForecaster,
+    rough_hurst,
+)
 from panelary.registry import FeatureSpec as _FeatureSpec  # noqa: E402
 from panelary.registry import registry as _registry  # noqa: E402
 
-__all__ += ["intraday_realized_measures"]
+__all__ += ["intraday_realized_measures", "rough_hurst", "RFSVForecaster"]
 
 _REALIZED_SPECS: tuple[_FeatureSpec, ...] = (
     _FeatureSpec(
@@ -238,6 +242,24 @@ _REALIZED_SPECS: tuple[_FeatureSpec, ...] = (
         axis="time",
         flavour="trailing",
         cost_hint="O(N * H_max)",
+    ),
+    _FeatureSpec(
+        name="rough_hurst",
+        namespace="econ",
+        input_shape="frame",
+        output_shape="frame",
+        params={"window": int, "lags": tuple, "noise_var": object, "min_periods": int},
+        tier="C",
+        panel_safe=True,
+        leakage_safe=True,
+        # Native trailing rolling means per lag within the entity: row t reads
+        # rows t - W + 1 .. t only.
+        safe_scope="rowwise",
+        source="Panelary",
+        license="Apache-2.0",
+        axis="time",
+        flavour="trailing",
+        cost_hint="O(N * L)",
     ),
 )
 for _spec in _REALIZED_SPECS:

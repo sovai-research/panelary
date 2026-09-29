@@ -322,12 +322,33 @@ def _intraday_realized_op(frame: Any) -> Any:
     )
 
 
+def _rough_hurst_op(frame: Any) -> Any:
+    """``rough_hurst`` on the probe's ``x`` as a log-variance proxy."""
+    from panelary.econ.features import rough_hurst
+
+    return rough_hurst(
+        frame,
+        entity=ENTITY,
+        time=TIME,
+        log_variance=VALUE,
+        noise_var=0.05,
+        window=8,
+        lags=(1, 2, 3),
+        min_periods=6,
+    )
+
+
 #: ``panelary.econ.features`` frame functions, as ``name -> (rendering, op)``.
 _ECON_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = {
     "intraday_realized_measures": (
         "intraday_realized_measures(<probe panel>, session=time // 4, "
         "returns='x', min_obs=3) joined back onto every row",
         _intraday_realized_op,
+    ),
+    "rough_hurst": (
+        "rough_hurst(<probe panel>, log_variance='x', noise_var=0.05, window=8, "
+        "lags=(1, 2, 3), min_periods=6)",
+        _rough_hurst_op,
     ),
 }
 _FRAME_OPS.update({name: op for name, (_r, op) in _ECON_FRAME_OPS.items()})
