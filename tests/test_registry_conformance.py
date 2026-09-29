@@ -113,14 +113,16 @@ try:
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
     _shape = None  # type: ignore[assignment]
 
-# `panelary.covariance` is a lazy submodule with a lazy initialiser, exactly like
-# `shape`: its frame operations register the first time a public name is read.
+# `panelary.covariance` is a lazy subpackage (not loaded by `import panelary`)
+# whose frame-op specs register on the first public-name access -- loaded here
+# for the same reason as `evolve` and `shape` above.
 try:
-    import panelary.covariance as _cov
+    import panelary.covariance as _covariance
 
-    _cov.avg_correlation  # noqa: B018 - the first access registers the catalogue
+    _covariance.market_state  # noqa: B018 - the first access registers the specs
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
-    _cov = None  # type: ignore[assignment]
+    _covariance = None  # type: ignore[assignment]
+_cov = _covariance
 
 
 # --------------------------------------------------------------------------- #
@@ -380,7 +382,7 @@ _FRAME_OPS.update(
 )
 
 #: ``panelary.covariance`` frame operations, as ``name -> (rendering, op)``.
-#: Each returns one row per date (or panel rows, for ``kelly_jiang_beta``); the
+#: All mix entities by design. Each returns one row per date (or panel rows, for ``kelly_jiang_beta``); the
 #: per-date forms run with ``broadcast=True`` so the result is joined back onto
 #: the probe panel's ``(entity, time)`` keys the verifiers compare on. Windows
 #: are at most 5 dates (the shortest entity has 12 rows), and the tail
@@ -443,6 +445,33 @@ _COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
             "avg_skewness(returns='x', window=4, broadcast=True)",
             lambda f: _cov.avg_skewness(
                 f, returns=VALUE, window=4, broadcast=True, **_COV_KEYS
+            ),
+        ),
+        "market_state": (
+            "market_state(returns='x', window=5, ar_short=2, ar_long=4, "
+            "broadcast=True)",
+            lambda frame: _cov.market_state(
+                frame,
+                returns=VALUE,
+                window=5,
+                ar_short=2,
+                ar_long=4,
+                broadcast=True,
+                entity=ENTITY,
+                time=TIME,
+            ),
+        ),
+        "turbulence": (
+            "turbulence(returns='x', window=5, refit=2, pct_window=6, broadcast=True)",
+            lambda frame: _cov.turbulence(
+                frame,
+                returns=VALUE,
+                window=5,
+                refit=2,
+                pct_window=6,
+                broadcast=True,
+                entity=ENTITY,
+                time=TIME,
             ),
         ),
     }
@@ -1042,6 +1071,9 @@ _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
         "kelly_jiang_beta",
         "xs_wasserstein",
         "avg_skewness",
+        # covariance: per-date functions of the cross-asset covariance matrix
+        "market_state",
+        "turbulence",
     }
 )
 

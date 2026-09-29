@@ -72,6 +72,7 @@ nav:
     - Panel ML Models: user-guide/models.md
     - Feature Attribution: user-guide/attribution.md
     - Latent Factors: user-guide/factors.md
+    - Covariance & Market State: user-guide/covariance.md
     - Shape Algebra: user-guide/shape.md
     - Numerical Embeddings: user-guide/embeddings.md
     - Validation: user-guide/validation.md

@@ -27,6 +27,9 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 
+# `psd_repair` moved to `_internal/_linalg.py` (coordination note D6); it is
+# re-exported here unchanged so `panelary.depend.psd_repair` keeps working.
+from panelary._internal._linalg import psd_repair
 from panelary.core.panel_frame import PanelFrame
 from panelary.core.protocol import PanelTransformer
 from panelary.depend._coef import tail_dependence_matrix, xi_matrix
@@ -272,33 +275,6 @@ def matrix_values(result: pl.DataFrame) -> tuple[np.ndarray, list[str]]:
     for xv, yv, e in result.select("x", "y", "estimate").iter_rows():
         M[pos[xv], pos[yv]] = np.nan if e is None else e
     return M, names
-
-
-def psd_repair(M: np.ndarray) -> tuple[np.ndarray, float]:
-    """Nearest-by-clipping PSD correlation matrix and the smallest eigenvalue
-    **before** repair.
-
-    A pairwise-complete (or nonlinear) dependence matrix need not be positive
-    semi-definite. Negative eigenvalues are clipped to zero and the result is
-    rescaled to a unit diagonal.
-
-    Returns
-    -------
-    (repaired, min_eigenvalue)
-    """
-    A = np.asarray(M, dtype=np.float64)
-    A = 0.5 * (A + A.T)
-    A = np.where(np.isfinite(A), A, 0.0)
-    np.fill_diagonal(A, 1.0)
-    w, v = np.linalg.eigh(A)
-    lam_min = float(w.min())
-    if lam_min >= 0:
-        return A, lam_min
-    R = (v * np.clip(w, 0.0, None)) @ v.T
-    d = np.sqrt(np.clip(np.diag(R), 1e-300, None))
-    R = R / np.outer(d, d)
-    np.fill_diagonal(R, 1.0)
-    return R, lam_min
 
 
 def to_distance(

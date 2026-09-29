@@ -103,7 +103,28 @@ def bai_ng(
     kmax = _resolve_max_r(n, p, max_r)
 
     svals = np.linalg.svd(Z, compute_uv=False)
-    tail = np.concatenate([np.cumsum((svals**2)[::-1])[::-1], [0.0]])
+    return _bai_ng_from_spectrum(svals**2, n, p, kmax, criterion)
+
+
+def _bai_ng_from_spectrum(
+    sv2: NDArray[Any], n: int, p: int, kmax: int, criterion: str = "IC_p2"
+) -> int:
+    """The Bai--Ng minimiser from squared singular values already in hand.
+
+    :func:`bai_ng` without the SVD, for callers that have the spectrum already
+    (``panelary.covariance`` computes one per window and must not pay for a
+    second decomposition). ``sv2`` are the squared singular values of the
+    centred ``(n, p)`` matrix -- equivalently ``n_eff`` times the eigenvalues
+    of its sample covariance -- in any order that is descending; missing
+    trailing zeros are fine. ``kmax`` is used as given (at least 1).
+    """
+    if criterion not in _CRITERIA:
+        raise ValueError(f"`criterion` must be one of {_CRITERIA}, got {criterion!r}.")
+    kmax = max(1, int(kmax))
+    sv2 = np.asarray(sv2, dtype=np.float64)
+    if sv2.size < kmax + 1:
+        sv2 = np.concatenate([sv2, np.zeros(kmax + 1 - sv2.size)])
+    tail = np.concatenate([np.cumsum(sv2[::-1])[::-1], [0.0]])
     denom = float(n * p)
     v = tail / denom  # v[k] == V_k, the residual after keeping k components
     floor = max(float(v[0]) * 1e-12, np.finfo(float).tiny)

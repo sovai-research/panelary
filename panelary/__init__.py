@@ -425,7 +425,7 @@ else:
 #:                transform (tests/test_shape_leak_safety.py)
 #:   covariance   numpy + polars only, but no caller needs it at import time
 #:                and the cold-import budget is shared (plan
-#:                covariance-and-market-state section 4.1)
+#:                `covariance-and-market-state.md` section 4.1)
 #:
 #: They resolve on first attribute access via the PEP 562 hook below, so
 #: ``pn.forecasting`` works without making every ``import panelary``
