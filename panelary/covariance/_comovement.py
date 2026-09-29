@@ -115,8 +115,8 @@ def _window_kernel(
     (see :func:`_has_variance`). ``codes`` gives each column's group (``None``:
     one group). Returns ``(rho, n, labels)`` per group present in ``codes``:
     ``rho`` is NaN where fewer than two names with a variance remain, and
-    ``n`` counts those names. ``overwrite=True`` lets a complete ``block`` (the
-    caller's own compacted copy) be centred in place.
+    ``n`` counts those names. ``overwrite=True`` lets ``block`` (the caller's
+    own compacted copy) be centred in place.
     """
     rows, width = block.shape
     if codes is None:
@@ -136,8 +136,12 @@ def _window_kernel(
             dev = block - mean
     else:
         counts = finite.sum(axis=0)
-        mean = np.where(finite, block, 0.0).sum(axis=0) / np.maximum(counts, 1)
-        dev = np.where(finite, block - mean, 0.0)
+        missing = ~finite
+        dev = block if overwrite else block.copy()
+        np.copyto(dev, 0.0, where=missing)
+        mean = dev.sum(axis=0) / np.maximum(counts, 1)
+        dev -= mean
+        np.copyto(dev, 0.0, where=missing)  # zero after demeaning
     sumsq = np.einsum("ij,ij->j", dev, dev)
     keep = _has_variance(sumsq, counts, mean) & (counts >= 2)
     if not keep.all():
@@ -348,9 +352,11 @@ def avg_correlation(
     polars.DataFrame
         ``time [, group], avg_corr, n_entities`` -- plus ``universe_stable`` for
         the pooled ``"pollet_wilson"`` kind -- or the panel with those columns
-        when ``broadcast=True``. ``avg_corr`` is null where fewer than
-        ``min_entities`` names qualify. ``n_entities`` is the size of the
-        universe used.
+        when ``broadcast=True``. ``n_entities`` counts the (group's) universe
+        names with a variance in the window, i.e. the names averaged over;
+        ``avg_corr`` is null where it is below ``min_entities``. A group
+        appears on a date when at least one of its names is in that date's
+        universe.
 
     Notes
     -----
