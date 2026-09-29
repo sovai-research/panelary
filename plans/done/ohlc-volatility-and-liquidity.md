@@ -1,14 +1,16 @@
 # OHLC volatility, spreads, liquidity and realized-measure extensions — build contract
 
-> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
+> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](../todo/00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
 
-> **Status (2026-09-29): not started — plan only.** No package code exists for
-> anything in this document beyond what §3 lists as already shipped. Every
-> number in §1–§2 was measured on 2026-09-29 by prototype scripts (Apple M5 Pro,
-> 15 threads, 48 GB, Python 3.13, polars 1.44.2 and 1.35.2, numpy 2.5.3); they
-> are measurements, not estimates. The prototypes lived in a session scratchpad
-> and are **not** in the repo — M1/M2 port them to `benchmarks/ohlc_vol/`.
-> **Blocked at M0 on a named engine caller (§14).**
+> **Status (2026-09-29): implemented (M1–M6).** The user directed integration, which
+> stands in for the M0 caller gate. Shipped in `panelary/econ/features/`: `range_volatility`
+> and `.panel.rolling_vol` with the `rs_vol` deprecation (M1, bug B6), `ohlc_spread` (M2),
+> `price_impact` / `pastor_stambaugh_gamma` / `zero_return_share` / `fht_spread` (M3),
+> `intraday_realized_measures` and the HAR variants (M4), realized kernel / TSRV /
+> pre-averaging (M5, `_internal/_realized_kernel.py`) and `rough_hurst` / `RFSVForecaster`
+> (M6, `_internal/_variogram.py`). Yang–Zhang stays the default. Not built: stored R
+> `TTR` / `highfrequency` parity (no R available); the multivariate kernel moved to the
+> covariance plan (note D7).
 
 Leak-safe, vectorised estimators of **volatility from OHLC bars**, **bid–ask
 spreads from OHLC bars**, **low-frequency price-impact / liquidity proxies**,

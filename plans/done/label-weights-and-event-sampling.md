@@ -1,13 +1,16 @@
 # Label weights, sample weighting, sequential bootstrap, trend scanning, bet sizing and information-driven bars — build contract
 
-> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
+> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](../todo/00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
 
-> **Status (2026-09-29): not started — plan only.** Nothing below exists in
-> `panelary/` except what §2 lists as existing (verified by reading the code on
-> 2026-09-29). This plan realises the **"Labeling & Weights"** section of
-> [`docs/roadmap.md`](../../docs/roadmap.md) and the label-horizon half of
-> "Validation & Leak-Audit". It was written in parallel with nine sibling plans;
-> §3.3 states every boundary explicitly rather than assuming one.
+> **Status (2026-09-29): implemented except the optional M7.** Shipped:
+> `core/_spans.py` and the vectorised purge with byte-identical folds (M1), `panelary.weights`
+> and weighted `cross_validate` (M1–M2), trend scanning and cross-sectional labels (M3),
+> `panelary.sample` (sequential bootstrap, bagging, CUSUM, tick rule, bars; M4–M5) and
+> `panelary.sizing` (M6). Bugs B1, B2, B3 and B5 of the coordination note are fixed.
+> Decisions taken at merge: `fixed_horizon` warns (not raises) on an irregular grid by
+> default; a null test `t1` warns and keeps folds unchanged. Not built: M7
+> (`first_event`), the segment tree for N > 2^20, registry specs for `cusum_filter` /
+> `tick_rule`.
 
 Pure **numpy + polars** in the import path. numba is used only through the
 existing `fast` extra (`panelary._internal._deps.have("numba")`, imported lazily

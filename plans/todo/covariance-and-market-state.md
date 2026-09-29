@@ -2,7 +2,17 @@
 
 > **Cross-plan decisions:** [`00-cross-plan-coordination.md`](00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
 
-> **Status (2026-09-29): not started — plan only.**
+> **Status (2026-09-29): M1–M4 implemented; M5–M7 not started.** Shipped in
+> `panelary/covariance/` (lazy): the estimators and `CovEstimate` (M1), the as-of engine
+> `rolling` / `market_state` / `market_loading` and `core/_schedule.py` (M2), `turbulence`,
+> the transformers, `avg_correlation` and `common_idio_vol` (M3), and the `.xs`
+> distribution ops, Kelly–Jiang, `xs_wasserstein` and `avg_skewness` (M4); `psd_repair`
+> moved to `_internal/_linalg.py`. Measured findings: exact LW2020 series removes most of
+> its numerical sensitivity (8.6e-7 → 7e-14), and on a smooth spectrum plain Ledoit–Wolf
+> tracks the oracle better than QIS, so the QIS default needs the M5 harness before it is
+> locked. `market_state` daily at N = 3,000 measured over budget under machine load.
+> Remaining: M5 (Gerber, pairwise repair, EWMA, `OnlineCovariance`, accuracy harness;
+> traps T7, T8, T15), M6 (gated extras), M7 (multivariate realized kernel, per note D7).
 
 As-of covariance and correlation estimation on trailing windows, per date, for
 panels of N = 50 to 5,000 assets. On top of that engine sit the per-date market-state

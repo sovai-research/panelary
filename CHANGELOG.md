@@ -19,6 +19,141 @@ above the 0.4.0 entry, and [MIGRATING.md](MIGRATING.md) for how to move.
 
 ## [Unreleased]
 
+### Added — forecast evaluation: Sharpe inference, forecast comparison, calibration, VaR/ES backtests
+
+Every new test returns one `EvaluationResult` (vectorised over models, with a fixed
+`EVALUATION_SCHEMA`, exported with `evaluation_table`), so results from different
+tests stack into one evidence table, and `reference` always names the null
+distribution actually used. The naive tests are wrong in known directions, and the
+new ones are sized on published designs.
+
+- **`sharpe_ratio_inference`** (i.i.d.-normal, i.i.d. non-normal, HAC, exact
+  noncentral-t, studentized block bootstrap) and **`sharpe_ratio_test`**: Sharpe (or
+  log-variance) difference tests of M strategies against a benchmark by the Ledoit–Wolf
+  (2008) studentized circular-block bootstrap, computed as BLAS products on shared
+  block-start counts (0.68–0.87 s for B = 1000, T = 5000, M = 1000), with Romano–Wolf
+  across strategies and fold `boundaries`. On LW's designs at nominal 5% the
+  Jobson–Korkie–Memmel test rejects 8.6–12.8% (kept only as a labelled baseline that
+  always warns); the bootstrap rejects 4.9–6.3%. Plus `sharpe_block_length` (LW
+  Algorithm 3.1) and `annualize_sharpe` (Lo 2002).
+- **Forecast comparison**: `clark_west` (for nested models, where Diebold–Mariano
+  rejects at most 2% at nominal 10%), `oos_r2`, `mincer_zarnowitz`,
+  `pesaran_timmermann`, `encompassing_test`, `giacomini_white`, `fluctuation_test` and
+  `one_time_reversal_test`, and the `loss_panel` adaptor. The Giacomini–Rossi critical
+  values are simulated (200,000 paths, corrected for discrete monitoring;
+  `benchmarks/gr_critical_values.py`), not copied from the paper, and cross-checked
+  against Andrews' sup-LM values (8.88 vs 8.85 at 5%).
+- **Luck versus skill**: `storey_pi0`, `luck_versus_skill` (Barras–Scaillet–Wermers),
+  `alpha_bootstrap` (Fama–French 2010 joint dates, which holds 4.0% under an omitted
+  common factor where the Kosowski et al. residual scheme rejects 16.7%), and
+  `evolve.significance_hurdle` (Harvey–Liu–Zhu t-hurdles).
+
+- **`corp_reliability` / `CORPResult`**: CORP reliability diagrams (PAV isotonic
+  recalibration, ties pooled) with the exact MCB − DSC + UNC score decomposition
+  (Brier, log, squared error) and consistency/confidence bands: the stable
+  replacement for binned ECE. On the docs example binned ECE ranges 0.0152–0.0381
+  across 5–50 bins; CORP gives one MCB. Optional numba PAV kernel, bitwise-identical
+  to its pure-Python twin. **`murphy_diagram`**: exact Murphy diagrams for quantiles,
+  expectiles/means and probabilities.
+- **VaR/ES backtests**: `exceedances`, `kupiec_test` (exact binomial),
+  `christoffersen_test` (exact Monte Carlo null), `dynamic_quantile_test` (asymptotic
+  or Monte Carlo), `acerbi_szekely_test` (Z1/Z2 with `PredictiveSpec`), `fz0_loss`,
+  `qlike_loss` and `var_backtest` (one evidence table; `var_convention` required).
+  At T = 250 and 1% the asymptotic Kupiec test rejects 9.6% at nominal 5% and the
+  exact one 4.0%; asymptotic DQ rejects 9.3%, Monte Carlo DQ 5.1%. Statistical
+  evidence, not a regulatory determination.
+- **`energy_score`** (exact, direct, sliced; fair variant) and **`variogram_score`**
+  (optional numba kernel), with propriety tests.
+- User guides "Forecast Evaluation & Sharpe Inference" and "Calibration & Risk
+  Backtests".
+
+### Added — `covariance`: as-of covariance, market state and cross-sectional distribution
+
+`panelary.covariance` (lazy: `import panelary` does not load it) estimates the
+entity × entity covariance of a return panel **as of each date** from a trailing
+window, for 50 to 5,000 assets, without ever materialising an N × N matrix per date.
+
+- **`estimate`** returns a diagonal-plus-low-rank `CovEstimate` (`solve`, `inv_quad`,
+  `logdet`, `cond`, `gmv_weights`, `risk`, `corr`, `subset`, `to_dense`) from the
+  min-side Gram matrix. Methods: QIS (default, in correlation space), LW2020,
+  Ledoit–Wolf to identity / diagonal / constant-correlation / single-index, OAS,
+  Marchenko–Pastur clip / targeted / detone, a factor model and the sample
+  covariance. A singular estimate raises on `solve` rather than pseudo-inverting.
+  Ledoit–Wolf matches sklearn to 1e-12.
+- **`rolling`** (a lazy as-of `CovarianceSeries` with `.at(date)`), **`market_state`**
+  (absorption ratio, eigenvalue shares, effective rank, MP signal count, market-mode
+  localisation), **`market_loading`**, causal **`turbulence`**, and the `MarketState` /
+  `Turbulence` transformers. Every value is prefix-invariant at `tol=0`, including
+  when names list later.
+- **`avg_correlation`** (exact, and Pollet–Wilson with an O(N) path on stable
+  universes), **`common_idio_vol`**, **`kelly_jiang_tail`** / **`kelly_jiang_beta`**,
+  **`xs_wasserstein`** and **`avg_skewness`**, with `group=` variants that use each
+  name's label as of the date.
+- **`.xs.dispersion`**, **`.xs.tail_index`** (Hill), **`.xs.up_share`** and
+  **`.xs.entropy`**: per-date cross-sectional summaries, registered as `xs_*`.
+- User guides "Covariance & Market State" and "Cross-Sectional Distribution", and
+  `benchmarks/bench_covariance.py`.
+
+### Added — label weights, event sampling, bars and bet sizing
+
+- **`panelary.weights`**: `spans`, `concurrency`, `average_uniqueness`, `effective_n`
+  (the honest sample size of an overlapping-label panel), `return_attribution`,
+  `time_decay`, `class_weights`, `attach` (global, for the final refit only) and
+  `FoldWeights` (recomputed per fold from the training labels only; raises on an
+  under-purge). `cross_validate(sample_weight=, score_weight=)`, also on
+  `validate.cpcv` and `validate.purged_kfold`; `cpcv_splits(t1=)` and
+  `walk_forward_splits(t1=)`.
+- **`panelary.sample`**: `sequential_bootstrap` (exact and `uniqueness_iid`, pooled or
+  per entity; 85–127 ms at 100k labels with numba), `SequentialBagging`,
+  `cusum_filter`, `tick_rule`, `bars` (tick / volume / dollar; fixed or adaptive;
+  completed bars only, stamped at their last tick) and `imbalance_bars` (imbalance
+  and run bars with clamped expectations).
+- **`label.trend_scanning`** (recursive-residual horizon sweep, ~1e-11 relative to
+  exact OLS; `t1` is the information end and tail rows are `censored`),
+  **`.ts.trend_scan`** (the causal look-back feature), **`label.excess_over_median`**
+  and **`label.quantile_label`**.
+- **`panelary.sizing`**: `bet_size`, `average_active`, `discretize`, `sigmoid_w`,
+  `sigmoid_size`, `target_position`, `inverse_price`, `limit_price`.
+- `triple_barrier(vol=)` and `factor.forward_return(end_time=)`.
+- User guides "Label Spans & Weights" and "Trend Labels, Bars & Bet Sizing".
+
+### Added — OHLC volatility, spreads, liquidity and realized measures
+
+- **`econ.features.range_volatility`**: Yang–Zhang (default), Garman–Klass with
+  overnight, Rogers–Satchell, Garman–Klass, Parkinson and close-to-close, trailing
+  and leak-safe, with an invalid-bar policy, a `*_n_valid` column and an optional
+  discrete-monitoring correction (exact for Rogers–Satchell). Yang–Zhang stays the
+  default: the alternative was more than 5% better in only 2 of 13 regimes.
+  `ohlc_variance_terms` exposes the per-bar terms.
+- **`econ.features.ohlc_spread`**: EDGE (Ardia, Guidotti & Kroencke 2024),
+  Corwin–Schultz and Abdi–Ranaldo spreads. EDGE matches the reference `bidask`
+  package at every index, including with missing data.
+- **`price_impact`**, **`pastor_stambaugh_gamma`**, **`zero_return_share`** and
+  **`fht_spread`**.
+- **`intraday_realized_measures`**: one row per (entity, session), stamped at the
+  close: RV, subsampled RV, BV, MedRV, MinRV, realized semivariances, signed jump
+  variation, RQ, TPQ, MedRQ, jump z and the C/J split, plus the noise-robust Parzen
+  realized kernel, TSRV and pre-averaged RV (within 1% of the true variance at
+  5-second sampling where plain RV is +94% to +935%).
+- **`HARModel(spec="harq" | "shar" | "har_cj", insanity_filter=...)`**, fitted on the
+  training fold; **`rough_hurst`** (noise-corrected variogram Hurst exponent) and
+  **`RFSVForecaster`**.
+- **`.panel.rolling_vol`**, the honest name for the trailing rolling standard
+  deviation (see Deprecated).
+- User guides "OHLC Volatility & Liquidity" and "Realized Measures & Rough
+  Volatility"; benchmarks in `benchmarks/ohlc_vol/`.
+
+### Added — shared internals
+
+`_internal/_special.py` is the one home for normal, digamma/trigamma, log-gamma,
+incomplete-beta and Student-t functions (the old private copies re-export it, so
+results are bit-identical). `_internal/_jit.py` is the one lazy numba dispatch
+(`cache=True`, `error_model="numpy"`, no `fastmath`), with `force_numpy()` and a
+bitwise parity check; every new kernel has a numpy twin. `core/_schedule.py`
+(`Schedule`, `Refit`) is the shared start-anchored refit schedule: end-anchored grids
+are refused because they need data from after the date. `psd_repair` moved to
+`_internal/_linalg.py`, with the old import path kept.
+
 ### Added — `leakage`: a point-in-time compiler, and a price for what leaks
 
 Two tools, one package. `causalize` **prevents** leakage; `borrowed_accuracy`
@@ -340,6 +475,37 @@ so none of it is reused.
 
 ### Fixed
 
+- **`evolve_features` scored formulas against targets in a different row order.**
+  The evaluator sorted rows by (time, entity) and the compiler returned them by
+  (entity, time), paired by position, so the search could not find a real signal
+  (`cs_rank(signal)` scored an IC of 0.016 instead of 0.262). Values are now matched
+  to targets by row, and results no longer depend on `sort=` or input order.
+- **`evolve`'s held-out check failed with an `IndexError`** (reported as "HOLDOUT
+  FAILED") whenever the label had a null tail, which every `forward_return` label
+  has. Only Polars errors are now caught, recorded as `holdout_error` with a warning.
+- **`evolve.TrialLedger.summary` failed real signals.** Its null bar came from the
+  trials' own score variance, which rises with any real signal, and its DSR mixed
+  scales. Both are now calibrated on decoys (`EvolveConfig.noise_features`, now
+  used), and held-out scores use the search's sign orientation. The planted signal
+  now reads SIGNAL in 30 of 30 seeds (was 25).
+- **`triple_barrier` reported truncated labels as resolved (B1).** A new `censored`
+  column flags rows whose vertical barrier runs past the data.
+- **`fixed_horizon` had its own unguarded negative shift (B2).** It now goes through
+  `factor.forward_return`.
+- **`preprocessing.resample` stamped each window at its left edge (B3)**, so a value
+  stamped `t` held data up to `t + freq`. See Changed.
+- **A null `t1` at a test time never purged (B5).** It now warns; folds are unchanged.
+- **`.panel.rs_vol` was documented as Rogers–Satchell (B6)** but has always been a
+  rolling standard deviation. See Deprecated.
+- **`econ.demean` gave levels with no observation an offset of 0 (B4)**, so imputed
+  cells that could not be identified were silently filled. They are now NaN.
+- **`pn.evolve` raised `AttributeError`** until `import panelary.evolve` (B11).
+- **`PurgedKFold` / `CombinatorialPurgedCV` and `cross_validate` raised on every
+  Date/Datetime time column** under polars 1.44.
+- **`detect` docstrings** disagreed on four measured figures; they now agree with
+  recomputed values.
+- The Student-t tail probability used by the forecast tests returned 1.0 for a NaN
+  statistic; it now returns NaN.
 - **`sliding_window_split` trained on future data.** `cross_validation`'s
   sliding splitter computed its training offset as
   `pl.len() - cutoff - window_size`. When the window exceeded the history
@@ -398,6 +564,25 @@ so none of it is reused.
 
 ### Changed
 
+- **`validation.romano_wolf` uses a suffix-max stepdown**: O(B·S) instead of
+  O(B·S²), bitwise-identical output (0.81 s → 5 ms at S = B = 1000).
+  `benjamini_hochberg` accepts `pi0=` (adaptive BH); the default is unchanged.
+- **`assert_no_lookahead`, `assert_prefix_invariant` and `evolve.assert_causal` check
+  eight cut points by default** (a consecutive pair at 20/40/60/80% of the time axis)
+  instead of one or three. A period-average leak passed the old single cut but fails
+  at 200 of 249 cuts. New `cuts=` argument; no existing feature was flagged.
+- **`preprocessing.resample` takes `label="left" | "right"`.** Omitting it keeps the
+  left-edge stamp and emits a `FutureWarning`; the default will become `"right"`.
+- **`label.fixed_horizon` warns on an irregular time grid** (for example weekends on
+  a business-day panel) and keeps its previous output; `allow_gaps=False` raises.
+- **`label.triple_barrier` appends a `censored` column.** `label`, `ret` and `t1` are
+  unchanged.
+- **The `t1` purge is 46–239× faster**, with byte-identical folds.
+- `daily_realized_measures` shares its per-day expressions with
+  `intraday_realized_measures`; its output is bitwise unchanged.
+- `reduce.bai_ng` delegates to `_bai_ng_from_spectrum`, with the same results.
+- `pn.covariance` and `pn.evolve` are lazy submodules; `weights`, `sample` and
+  `sizing` are eager (together about 5–13 ms of import time).
 - **`frac_diff`'s warm-up is prefix-invariant.** A row is null iff it lacks a full
   trailing window, so a series shorter than the kernel is now all-null. It used to
   return one truncated-kernel value that turned back into `null` as the series grew —
@@ -473,6 +658,13 @@ so none of it is reused.
 - `_ffd.py` reached up into `panelary.econ` through a deferred import — the sole
   cause of a latent import cycle. `estimate_ffd_order` moved to the module whose
   maths it already called; the leaf now has zero intra-package imports.
+
+### Deprecated
+
+- **`.panel.rs_vol`**: use `.panel.rolling_vol`, whose output is identical. It emits a
+  `FutureWarning` once per process and will be removed no earlier than two minor
+  releases from now. The name will never be reused for Rogers–Satchell; the real
+  estimator is `econ.features.range_volatility(method="rogers_satchell")`.
 
 ### Removed
 

@@ -1,5 +1,14 @@
 # Cross-plan coordination: the ten build contracts of 2026-09-29
 
+> **Build status (2026-09-29, end of day):** plans 1, 4 and 5 are implemented (optional
+> M7s aside) and moved to `plans/done/`; plan 3 has M1–M4. Shared plumbing shipped:
+> D1 `core/_schedule.py` (by plan 3, with a bit-exact `anchor="position"` mode for
+> `residualise`), D3 `_internal/_jit.py` (the CUSUM kernel migrated onto it), D4
+> `_internal/_special.py`, D5 `validation/_hac.py` and `_resample.py`, D6 `_internal/_linalg.py`,
+> `_ohlc.py`, `_realized_kernel.py` and `_variogram.py` (built by plan 5 because plan 8 has not
+> started; plan 8 reuses it). Bugs B1–B6 and B11 are fixed; B7–B10 remain. New issues found
+> during the build are listed under "Bugs found in shipped code" (B12–B19).
+>
 > **Status (2026-09-29): decisions only, no code.** Ten plans were written in parallel on
 > 2026-09-29, each without seeing most of the others. They propose overlapping shared
 > infrastructure and a few competing edits to the same files. **Where this note and a plan
@@ -9,11 +18,11 @@
 
 | # | Plan | New home | Engine caller today | Headline finding (measured in the plan) |
 |---|---|---|---|---|
-| 1 | [forecast-evaluation-and-sharpe-inference](forecast-evaluation-and-sharpe-inference.md) | `validation/` (new private modules) | **Yes, for M2**: truepoint's M07 calibration uses binned ECE; CORP replaces it | Jobson–Korkie over-rejects 8.5–8.9% at 5%; asymptotic Kupiec 9.7% at T=250; DM on nested models 0.3% vs Clark–West 5.5% |
+| 1 | [forecast-evaluation-and-sharpe-inference](../done/forecast-evaluation-and-sharpe-inference.md) | `validation/` (new private modules) | **Yes, for M2**: truepoint's M07 calibration uses binned ECE; CORP replaces it | Jobson–Korkie over-rejects 8.5–8.9% at 5%; asymptotic Kupiec 9.7% at T=250; DM on nested models 0.3% vs Clark–West 5.5% |
 | 2 | [drift-monitoring-and-sequential-inference](drift-monitoring-and-sequential-inference.md) | `monitor/` | No | PSI > 0.1 fires 79% under no drift at n=100; KS flags 73% on a φ=0.9 feature; peeking at a Wilson CI misses 53.5% |
 | 3 | [covariance-and-market-state](covariance-and-market-state.md) | `covariance/` | No (proposed: `generate/family_computation.py`) | Sample covariance min-variance risk 2,095× optimal at N=500, T=252; dual-Gram path 3.3 ms/date at N=3,000 vs 1.85 s |
-| 4 | [label-weights-and-event-sampling](label-weights-and-event-sampling.md) | `label/`, `core/_spans.py`, `sample/` | No (M1 hardens existing purge) | Vectorised purge identical and up to 800× faster; exact sequential bootstrap 90 ms (numba) at 100k labels |
-| 5 | [ohlc-volatility-and-liquidity](ohlc-volatility-and-liquidity.md) | `econ/features/` | No (proposed: `generate/family_computation.py`) | Yang–Zhang ≈7–8× close-to-close efficiency; EDGE matches `bidask` to 4e-15; staged polars 554 s → 6.2 s |
+| 4 | [label-weights-and-event-sampling](../done/label-weights-and-event-sampling.md) | `label/`, `core/_spans.py`, `sample/` | No (M1 hardens existing purge) | Vectorised purge identical and up to 800× faster; exact sequential bootstrap 90 ms (numba) at 100k labels |
+| 5 | [ohlc-volatility-and-liquidity](../done/ohlc-volatility-and-liquidity.md) | `econ/features/` | No (proposed: `generate/family_computation.py`) | Yang–Zhang ≈7–8× close-to-close efficiency; EDGE matches `bidask` to 4e-15; staged polars 554 s → 6.2 s |
 | 6 | [network-and-spatial-panel](network-and-spatial-panel.md) | `network/` | No (M1 has a proposed caller) | Own-lag residualising leaves the Burt–Hrdlicka commonality (t 4.6); peer-trailing-mean control cuts it to 1.6 |
 | 7 | [causal-state-space-and-regimes](causal-state-space-and-regimes.md) | `statespace/` | No (proposed: `generate/family_asof.py`) | Smoothed HMM labels "beat" filtered 94.2% vs 90.7% — all look-ahead; direct-form Butterworth order 8 blows up to 2.6e22 |
 | 8 | [multiscale-complexity-features](multiscale-complexity-features.md) | `complexity/` | No (M0 gate) | Haar wavelet-variance Hurst: sd 0.042–0.046 at W=256, unbiased under drift/fat tails; DFA prefix-sum shortcut errs 1.6e-3 |
@@ -143,6 +152,14 @@ code on 2026-09-29. The rest are as reported by the plan named, so reproduce the
 | B9 | `ConnectednessFeatures.panel_safe=True` although it mixes entities; `econ/__init__` promises per-entity centrality that is not emitted | `econ/_connectedness.py` | 6 | Flag or doc fix |
 | B10 | `evt_features` measured at about 19 min for 5,000 entities (per-row Python loop); the econ rolling long-memory estimator is also a per-row loop | `econ/features/_evt.py`, `_longmemory.py` | 9, 8 | No (speed only) |
 | B11 | `pn.evolve` raises `AttributeError` until `import panelary.evolve` (in neither the eager nor the lazy list); README says 56 registered specs (there are 60, and 122 with shape and evolve) | `panelary/__init__.py`, `README.md` | inventory | No |
+| B12 | `econ.features._common.ols` solves by the pseudo-inverse of X'X, silently zeroing badly scaled columns (a HARQ coefficient came out 0.00028 instead of −209.6; new code works around it) | `econ/features/_common.py` | 5 (build) | Yes |
+| B13 | `roll_spread` and `liquidity_features` fail on polars 1.35, the CI floor ("window expression not allowed in aggregation", nested `.over`); four tests in `test_econ_features_liquidity.py` | `econ/features/_liquidity.py` | 5 (build) | No (crash) |
+| B14 | `testing._first_mismatch` reports an identical `±inf` cell as a leak (inf − inf is NaN) | `panelary/testing.py` | 5 (build) | No (false alarm) |
+| B15 | `core.model_selection._norm_ppf` is off by ~1.6e-9 at 0.975 (feeds DSR, haircut, `expected_maximum_sharpe`); `diebold_mariano`'s `"less"` p-value is `1 - t_sf` | `core/model_selection.py`, `validation/_forecast_tests.py` | 1 (build) | Small numeric changes |
+| B16 | `residualise` takes an SVD of the full W×N block (42 ms at 252×3,000) where the dual Gram takes 6 ms, and is prefix-invariant only to ~5.6e-15 when names list later | `detect/_panel.py` | 3 (build) | No (speed); tiny numeric |
+| B17 | `cs_zscore`, `winsorize`, `quantile_bin` and `neutralize` are flagged `panel_safe=True` though they mix entities | `namespaces/xs.py` specs | 3 (build) | Flag only |
+| B18 | `preprocessing/_features.py` still calls `group_by_dynamic(by=...)` (deprecated); stub drift in `panel.pyi` (`frac_diff`, `zscore`, `rs_vol` frame forms) | `preprocessing/_features.py`, `namespaces/panel.pyi` | 4, 5 (build) | No |
+| B19 | `evolve_features` never passes the label horizon to the evaluator (embargo always 1), and there is no embargo between the search window and the holdout; `evaluate()` keeps a broad `except` | `evolve/` | fixes (build) | Yes |
 
 ## Recommended build order
 

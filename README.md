@@ -161,7 +161,7 @@ The [Quickstart](./docs/quickstart.md) continues from here — bulk feature extr
 | Point-in-time compilation (`causalize`) and borrowed accuracy | `pn.leakage` |
 | The leakage verifier and test helpers | `pn.assert_no_lookahead`, `pn.testing` |
 
-Every operator also registers a machine-readable `FeatureSpec` in `pn.registry` carrying its safety contract, provenance and license (56 registered today: `ts`=42, `xs`=7, `factor`=4, `panel`=3).
+Every operator also registers a machine-readable `FeatureSpec` in `pn.registry` carrying its safety contract, provenance and license (79 registered by `import panelary`: `ts`=47, `xs`=11, `econ`=8, `factor`=4, `panel`=4, `label`=3, `sample`=2; 149 once the lazy `covariance` (8), `evolve` (52) and `shape` (10) packages load).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for release history and [the roadmap](./docs/roadmap.md) for what is next.
 

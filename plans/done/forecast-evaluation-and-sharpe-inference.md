@@ -1,8 +1,19 @@
 # `panelary/validation/` — forecast evaluation & Sharpe inference: build contract
 
-> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
+> **Cross-plan decisions:** [`00-cross-plan-coordination.md`](../todo/00-cross-plan-coordination.md) overrides this plan where they differ (shared refit schedule, dense pivot, numba helper, special functions, ownership of shared files and `_internal` modules).
 
-> **Status (2026-09-29): not started — plan only.**
+> **Status (2026-09-29): implemented except the optional M7.** Shipped in
+> `panelary/validation/`: `_results.py` (`EvaluationResult`), `_hac.py`, `_resample.py`,
+> `_sharpe.py` (M1), `_calibration.py` (M2), `_forecast_compare.py` and `_gr_tables.py`
+> (M3), `_risk_backtest.py` (M4), `_luck_skill.py` (M5), `_multivariate_scores.py` (M6),
+> plus the suffix-max `romano_wolf`, `benjamini_hochberg(pi0=)` and
+> `evolve.significance_hurdle`. Deviations: the Giacomini–Rossi critical values are
+> simulated (`benchmarks/gr_critical_values.py`), not copied from the paper; the asymptotic
+> DQ test over-rejects, so `var_backtest` uses its Monte Carlo null. Not built: M7 (retrofit
+> SPA/MCS onto the count-matrix engine), Acerbi–Székely Z3, LW (2008) Table 3 fixtures
+> (data unavailable), DGJ asymptotic CORP bands. The user directed integration, which
+> overrides the AGENTS.md caller gate for this plan; M2 (CORP) is the drop-in successor to
+> truepoint's binned ECE (see `docs/user-guide/calibration-and-risk-backtests.md`).
 
 Extends the honest-validation layer (`panelary/validation/`) with the statistics that
 decide whether a performance claim survives contact with serial dependence, fat tails,
