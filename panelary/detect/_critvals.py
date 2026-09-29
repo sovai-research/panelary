@@ -296,9 +296,10 @@ def mc_table(
     --------
     Never index this table by your own sample length.  Comparing every endpoint
     against ``cv[:, T - 1]`` makes the threshold at an early date a function of
-    how much data eventually arrived: measured on this null, the length-100
-    critical value is 1.032 under ``t_max = 400`` and 0.843 under the naive
-    last-column rule at ``t_max = 600`` -- 0.507 apart on the same date.  Use
+    how much data eventually arrived: measured on this null (``min_window =
+    30``, ``lag = 0``, the defaults otherwise), the honest length-100 95% value
+    is 0.4331, while the last column is 0.6606 at ``T = 400`` and 0.6906 at
+    ``T = 800`` -- the threshold for the same date moves as data arrives.  Use
     ``cv[:, t]`` against ``stat[t]``, or :func:`align_cv`.
 
     See Also
@@ -983,9 +984,10 @@ def psy_min_window(nobs: int, *, acknowledge_leak: bool = False) -> int:
 
     Because it is a function of the sample length, the minimum window changes
     every time an observation arrives, which retroactively changes the statistic
-    at dates that were already published.  Measured on this null: growing ``T``
-    from 800 to 1600 revised **46%** of already-published dates by more than
-    0.05 t-units, with mean ``|delta| = 0.160`` and a maximum of ``1.576``.  A
+    at dates that were already published.  Measured on this null (300 paths,
+    ``lag = 0``, ``grid = 32``): growing ``T`` from 800 to 1600 revised
+    **41.2%** of already-published statistics by more than 0.05 t-units, with
+    mean ``|delta| = 0.123`` and a maximum of ``2.515``.  A
     chronology built this way is not reproducible in real time and its backtest
     is not honest.
 
@@ -1023,8 +1025,9 @@ def psy_min_window(nobs: int, *, acknowledge_leak: bool = False) -> int:
     if not acknowledge_leak:
         raise ValueError(
             "psy_min_window derives the minimum window from the sample length, "
-            "which retroactively revises already-published dates (measured: 46% "
-            "of dates moved by > 0.05 t-units when T grew 800 -> 1600). Pass an "
+            "which retroactively revises already-published dates (measured: "
+            "41.2% of statistics moved by > 0.05 t-units when T grew 800 -> "
+            "1600). Pass an "
             "absolute integer `min_window` instead. If you are replicating a "
             "published PSY table, call with acknowledge_leak=True."
         )

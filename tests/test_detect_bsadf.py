@@ -525,7 +525,7 @@ def test_psy_min_window_is_gated_behind_an_explicit_leak_acknowledgement() -> No
 
     It is the single most common source of look-ahead in this literature: with
     the window rule frozen, prefix invariance is exactly 0.0; with this rule the
-    deviation is mean 0.160 / max 1.576 and 46% of dates get revised.
+    deviation is mean 0.123 / max 2.515 and 41.2% of dates get revised.
     """
     fn = S.require_attr(S.critvals, "psy_min_window", "_critvals")
     with pytest.raises(Exception):

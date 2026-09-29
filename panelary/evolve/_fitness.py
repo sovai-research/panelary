@@ -121,6 +121,11 @@ PoolObjective = Literal["ic", "icir", "lcb"]
 #: per-date correlation is pure noise and the date is dropped, not shrunk.
 MIN_CROSS_SECTION: int = 5
 
+#: Row-index column :class:`PanelEvaluator` adds to its frame. It is how every
+#: compiled value is put back at its evaluator row, whatever order the compiler
+#: returns rows in. Shares the compiler's ``__ev_`` prefix, never a digest.
+_ROW: str = "__ev_row"
+
 #: 1/e — the conventional decay threshold for the ACF-crossing horizon.
 _INV_E: float = 1.0 / math.e
 
@@ -352,8 +357,23 @@ def _codes(values: np.ndarray) -> tuple[np.ndarray, int]:
 
 def _prepare_1d(
     feature: Any, target: Any, by_time: Any
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sort a flat ``(feature, target, time)`` triple into date-contiguous order."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Sort a flat ``(feature, target, time)`` triple into date-contiguous order.
+
+    Rows with a non-finite target are dropped, and the date groups are built
+    from the rows that remain, so every group is non-empty. That matters:
+    ``np.add.reduceat`` raises ``IndexError`` on a trailing empty group and
+    returns a neighbouring row (not zero) for an interior one. A forward label
+    is null on its last ``horizon`` dates, so trailing empty dates are the
+    normal case for a held-out window, not an edge case.
+
+    Returns
+    -------
+    (feature, target, starts, present, n_times)
+        ``starts`` delimits the non-empty date groups; ``present[g]`` is the
+        position of group ``g`` among all ``n_times`` distinct dates of
+        ``by_time``.
+    """
     f = np.asarray(
         feature.to_numpy() if isinstance(feature, pl.Series) else feature,
         dtype=np.float64,
@@ -369,11 +389,11 @@ def _prepare_1d(
         )
     codes, n_times = _codes(t)
     order = np.argsort(codes, kind="stable")
+    order = order[np.isfinite(y[order])]
     codes = codes[order]
-    keep = np.isfinite(y[order])
-    codes = codes[keep]
-    starts = _group_starts(codes, n_times)
-    return f[order][keep], y[order][keep], starts
+    present = np.unique(codes)
+    starts = _group_starts(np.searchsorted(present, codes), present.shape[0])
+    return f[order], y[order], starts, present, n_times
 
 
 # --------------------------------------------------------------------------- #
@@ -396,15 +416,21 @@ def rank_ic_series(
     Returns
     -------
     ndarray of float64, shape (n_dates,)
-        NaN for dates with a constant signal or fewer than
+        One entry per distinct value of ``by_time``, in sorted order. NaN for
+        dates with no finite target, a constant signal, or fewer than
         :data:`MIN_CROSS_SECTION` usable observations.
     """
-    f, y, starts = _prepare_1d(feature, fwd_ret, by_time)
+    f, y, starts, present, n_times = _prepare_1d(feature, fwd_ret, by_time)
+    out = np.full(n_times, np.nan, dtype=np.float64)
+    if present.shape[0] == 0:
+        return out
     xf = _transform_columns(f.reshape(-1, 1), starts, metric)
     xy = _transform_target(y, starts, metric)
     zf, counts = _standardize_by_date(xf, starts)
     zy, ycounts = _standardize_by_date(xy, starts)
-    return _per_date_ic(zf, zy[:, 0], starts, np.minimum(counts, ycounts))[:, 0]
+    ic = _per_date_ic(zf, zy[:, 0], starts, np.minimum(counts, ycounts))[:, 0]
+    out[present] = ic
+    return out
 
 
 def rank_ic(
@@ -556,7 +582,9 @@ def decile_monotonicity(
     """
     if n_bins < 2:
         raise ValueError(f"`n_bins` must be >= 2, got {n_bins}.")
-    f, y, starts = _prepare_1d(feature, fwd_ret, by_time)
+    f, y, starts, present, _ = _prepare_1d(feature, fwd_ret, by_time)
+    if present.shape[0] == 0:
+        return float("nan")
     ranks = _transform_columns(f.reshape(-1, 1), starts, "rank_ic")[:, 0]
     sizes = np.diff(starts)
     counts_per_date = np.add.reduceat(
@@ -1343,6 +1371,11 @@ class PanelEvaluator:
     compile_fn : callable, optional, keyword-only
         Override for ``_compile.compile_population`` (imported lazily so this
         module is usable before the compiler lands, and testable without it).
+        It is called as ``compile_fn(genomes, ctx, lf, keep=(row_col,))`` and
+        must carry the ``keep`` columns through, as ``compile_population``
+        does. Rows may come back in any order: values are matched to targets
+        through that row-index column, never by position, so
+        ``compile_population``'s ``sort=True`` and ``sort=False`` score alike.
     """
 
     def __init__(
@@ -1445,12 +1478,24 @@ class PanelEvaluator:
         missing = [c for c in self.ctx.base_columns if c not in names]
         if missing:
             raise ValueError(f"base columns {missing} not found in panel.")
+        if _ROW in names:
+            raise ValueError(
+                f"column {_ROW!r} is reserved by the evaluator; rename it."
+            )
         # Sorting by (time, entity) is doubly load-bearing: dates become
         # contiguous slices (the whole reduceat design), *and* every entity's
         # rows stay in time order, which is what `.over(entity)` rolling
         # operators require of the compiler.
-        return lf.drop_nulls(subset=[self.target]).sort(
-            [self.ctx.time, self.ctx.entity]
+        #
+        # The row index records that order. The compiler is free to return
+        # rows in another order -- `compile_population` sorts by
+        # (entity, time) by default -- so `_materialise` puts every compiled
+        # value back at its evaluator row through this index before a single
+        # value is paired with `self.y`.
+        return (
+            lf.drop_nulls(subset=[self.target])
+            .sort([self.ctx.time, self.ctx.entity])
+            .with_row_index(_ROW)
         )
 
     def _materialise_keys(self) -> None:
@@ -1561,7 +1606,7 @@ class PanelEvaluator:
             from panelary.evolve._compile import compile_population
 
             fn = compile_population
-        out_lf, cols = fn(list(genomes), self.ctx, self._lf)
+        out_lf, cols = fn(list(genomes), self.ctx, self._lf, keep=(_ROW,))
         # `compile_population` returns one name per genome *in genome order*,
         # and semantically identical genomes deliberately collapse onto a single
         # shared DAG node — so `cols` may repeat a name. That is the
@@ -1573,20 +1618,33 @@ class PanelEvaluator:
         # its own FitnessResult: each consumed a trial, and the TrialLedger has
         # to count them or `N` is understated and the deflation too weak.
         uniq = list(dict.fromkeys(cols))
-        mat = (
-            out_lf.select([pl.col(c).cast(pl.Float64) for c in uniq])
-            .collect()
-            .to_numpy()
-        )
-        pos = {name: i for i, name in enumerate(uniq)}
-        arr = np.asarray(mat, dtype=np.float64)[:, [pos[c] for c in cols]]
-        if arr.shape[0] != self.n_rows:
+        frame = out_lf.select(
+            [pl.col(_ROW), *[pl.col(c).cast(pl.Float64) for c in uniq]]
+        ).collect()
+        if frame.height != self.n_rows:
             raise ValueError(
-                f"the compiler returned {arr.shape[0]} rows but the evaluator "
+                f"the compiler returned {frame.height} rows but the evaluator "
                 f"holds {self.n_rows}; the compiled frame must preserve row "
-                "order and cardinality."
+                "cardinality."
             )
-        return arr
+        # The compiler may reorder rows (`compile_population` returns them in
+        # (entity, time) order unless `sort=False`), while `self.y` is in the
+        # evaluator's (time, entity) order. Pairing the two by position scores
+        # every formula against a shuffled target. Scatter each compiled row
+        # back to its evaluator row instead, so the result does not depend on
+        # the order the compiler chose.
+        row = frame[_ROW].to_numpy().astype(np.int64, copy=False)
+        if not np.array_equal(
+            np.bincount(row, minlength=self.n_rows), np.ones(self.n_rows, np.int64)
+        ):
+            raise ValueError(
+                "the compiled frame must carry every evaluator row exactly once "
+                f"(via the {_ROW!r} column passed in `keep`)."
+            )
+        pos = {name: i for i, name in enumerate(uniq)}
+        mat = np.empty((self.n_rows, len(uniq)), dtype=np.float64)
+        mat[row] = frame.select(uniq).to_numpy()
+        return mat[:, [pos[c] for c in cols]]
 
     # -- baselines --------------------------------------------------------- #
     def _ridge_residual(self, train_rows: np.ndarray) -> np.ndarray:
@@ -1911,6 +1969,20 @@ class PanelEvaluator:
 
         Feed the result to :func:`null_threshold` together with the real scores.
         """
+        results = self._noise_results(
+            n_shuffled=n_shuffled, n_gaussian=n_gaussian, seed=seed
+        )
+        return np.array([r.score for r in results], dtype=np.float64)
+
+    def _noise_results(
+        self, *, n_shuffled: int, n_gaussian: int, seed: int | None = None
+    ) -> list[FitnessResult]:
+        """Noise individuals scored through the identical path, in full.
+
+        :meth:`noise_scores` keeps only the aggregate; the search also needs
+        each decoy's per-case series, to calibrate the null the trial ledger
+        deflates against.
+        """
         base = (
             self._lf.select([pl.col(c).cast(pl.Float64) for c in self.ctx.base_columns])
             .collect()
@@ -1925,14 +1997,14 @@ class PanelEvaluator:
             seed=self.seed if seed is None else seed,
         )
         if noise.shape[1] == 0:
-            return np.empty(0, dtype=np.float64)
+            return []
         saved = self.halving
         self.halving = False  # every noise individual must see every fold
         try:
             results, _ = self.score_matrix(noise)
         finally:
             self.halving = saved
-        return np.array([r.score for r in results], dtype=np.float64)
+        return results
 
     def calibrate(
         self,

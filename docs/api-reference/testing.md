@@ -24,9 +24,16 @@ sails through.
 - `assert_no_train_test_leak` — perturb a *test* fold and assert the *train*-fold
   outputs are unchanged (the CV-boundary version of the same idea).
 - `assert_prefix_invariant` — truncate the panel at a cut and assert the output
-  over the surviving rows is unchanged. By default several cuts spread along the
-  time axis are tested, since one prefix length can match the full panel by
-  coincidence.
+  over the surviving rows is unchanged.
+
+`assert_no_lookahead` and `assert_prefix_invariant` test **eight cuts by
+default**: a consecutive pair at 20%, 40%, 60% and 80% of the time axis. One
+cut is not a test. A leak confined to a calendar period, such as a period mean
+broadcast back to its rows, is invisible at a cut on a period's last step: on 250
+dates with 5-step periods it passed the old single median cut and failed at 200
+of the other 249. Of two consecutive cuts, at most one can end a period longer
+than one step. Pass `cut=` for one cut or `cuts=[...]` for your own list; each
+cut costs one more run of the operation.
 
 All three accept `op` as either a `polars.Expr` or a callable `frame -> frame`,
 and failures name the first offending `(column, entity, time)`.

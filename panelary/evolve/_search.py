@@ -49,6 +49,7 @@ the search found nothing, and the report says so in words.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -87,8 +88,13 @@ class EvolveConfig:
     migration_every, reset_every : int or None
         Ring migration and island-reset cadences, in generations.
     noise_features : int
-        Number of shuffled/Gaussian decoys injected as an in-run null. A
-        candidate must beat the best *decoy*, not merely beat zero.
+        Number of zero-skill decoys (half within-date shuffles of the base
+        columns, half Gaussian) scored through the identical path once the
+        search ends. Their spread is the null variance behind the ledger's
+        ``expected_max_under_null`` and DSR, so the winner must beat what
+        ``N_hat`` *decoys* would reach, not merely zero. Set to 0 to fall
+        back to the cross-trial variance, which fails real signals: once the
+        population carries a signal, that variance measures the signal.
     max_library : int
         Cap on the returned decorrelated pool.
     holdout_frac : float
@@ -178,6 +184,7 @@ class EvolveResult:
             f"best raw score           : {led.get('best_score', 'n/a')}",
             f"deflated Sharpe (DSR)    : {led.get('deflated_sharpe', 'n/a')}",
             f"E[max] under the null    : {led.get('expected_max_under_null', 'n/a')}",
+            f"null calibrated on       : {led.get('null_source', 'n/a')}",
             f"P(backtest overfit)      : {led.get('pbo', 'n/a')}",
             f"verdict                  : {led.get('verdict', 'n/a')}",
             f"reason                   : {led.get('reason', '')}",
@@ -427,10 +434,26 @@ def evolve_features(
     # "signal" on pure noise, which is precisely the self-deception this module
     # exists to prevent.
     diagnostics = _holdout_diagnostics(
-        archive, holdout_lf, ctx, target=target, seed=cfg.seed
+        archive, holdout_lf, ctx, target=target, seed=cfg.seed, search_lf=search_lf
     )
     diagnostics.setdefault("n_search_candidates", len(is_scores))
-    summary = ledger.summary()
+    # The null the ledger deflates against. Without decoys it falls back to
+    # the variance of the trials' own scores, which is the null variance only
+    # if no trial has skill -- once the search breeds variants of a real
+    # signal, that variance measures the signal and the bar rises with it.
+    decoys = (
+        evaluator._noise_results(
+            n_shuffled=cfg.noise_features - cfg.noise_features // 2,
+            n_gaussian=cfg.noise_features // 2,
+            seed=cfg.seed,
+        )
+        if cfg.noise_features > 0
+        else []
+    )
+    summary = ledger.summary(
+        null_scores=np.asarray([d.score for d in decoys], dtype=np.float64),
+        null_series=(np.vstack([d.per_case for d in decoys]) if decoys else None),
+    )
     summary["n_failed_evaluations"] = n_failed
     return EvolveResult(
         library=library,
@@ -649,6 +672,7 @@ def _holdout_diagnostics(
     *,
     target: str,
     seed: int,
+    search_lf: pl.LazyFrame,
     max_candidates: int = 200,
 ) -> dict[str, Any]:
     """Score archive elites on unseen dates and correlate against search score.
@@ -661,6 +685,22 @@ def _holdout_diagnostics(
     withheld from the search entirely, so a plain per-date rank IC on them is
     already an honest out-of-sample number -- and running purged CV inside a
     short holdout window mostly produces NaNs.
+
+    Two things make the held-out number comparable to the search score:
+
+    * **The search's sign orientation.** The evaluator flips every candidate
+      to its training-date IC sign, so ``-x`` earns the search score of ``x``.
+      Each elite's held-out IC is therefore multiplied by the sign of its IC
+      over the search dates -- a fit on search dates only, applied to the
+      holdout. Scoring the raw IC instead put every negatively signed elite on
+      the wrong side of the scatter and reported "NO SIGNAL" on a planted
+      signal.
+    * **History for the rolling windows.** Elites are computed on the search
+      and holdout dates together, so a window longer than the holdout (e.g.
+      ``ts_zscore(x, 60)`` on a 24-date holdout) is warm on the first
+      held-out date instead of all-null. Every operator is causal, so a value
+      on a held-out date reads nothing later than that date; and only
+      held-out dates' targets are ever scored.
     """
     if holdout_lf is None:
         return {
@@ -676,32 +716,49 @@ def _holdout_diagnostics(
     genomes = [g for g, _s, _d in elites]
     search_scores = np.asarray([float(s) for _g, s, _d in elites], dtype=np.float64)
 
-    from ._compile import compile_population
-    from ._fitness import rank_ic
+    from . import _compile, _fitness
     from ._honest import search_diagnostics
 
+    # Only a Polars failure while evaluating the compiled plan is caught: that
+    # is data-dependent and should not throw away a finished search. It is
+    # recorded in the result *and* warned about. Any other exception is a bug
+    # and propagates -- a bare `except Exception` here once turned an
+    # IndexError in `rank_ic` into a "HOLDOUT FAILED" verdict on every panel
+    # whose label had a null tail.
     try:
-        out_lf, cols = compile_population(
-            genomes, ctx, holdout_lf, keep=(target,), drop_intermediates=True
+        held_dates = holdout_lf.select(pl.col(ctx.time).unique()).collect().to_series()
+        out_lf, cols = _compile.compile_population(
+            genomes,
+            ctx,
+            pl.concat([search_lf, holdout_lf], how="vertical"),
+            keep=(target,),
+            drop_intermediates=True,
         )
         uniq = list(dict.fromkeys(cols))
         frame = out_lf.select(
             [pl.col(ctx.time), pl.col(target), *[pl.col(c) for c in uniq]]
         ).collect()
-        pos = {c: i for i, c in enumerate(uniq)}
-        held = np.asarray(
-            [
-                rank_ic(
-                    frame[uniq[pos[c]]].to_numpy(),
-                    frame[target].to_numpy(),
-                    by_time=frame[ctx.time].to_numpy(),
-                )
-                for c in cols
-            ],
-            dtype=np.float64,
+    except pl.exceptions.PolarsError as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        warnings.warn(
+            f"evolve_features: the holdout check could not evaluate the "
+            f"archive elites on the held-out dates ({error}); no "
+            "generalisation check was performed.",
+            RuntimeWarning,
+            stacklevel=3,
         )
-    except Exception as exc:  # pragma: no cover - defensive
-        return {"verdict": f"HOLDOUT FAILED: {type(exc).__name__}: {exc}"}
+        return {"verdict": f"HOLDOUT FAILED: {error}", "holdout_error": error}
+    times = frame[ctx.time].to_numpy()
+    y = frame[target].to_numpy()
+    # `rank_ic_series` returns one IC per distinct date, in sorted order.
+    is_held = np.isin(np.unique(times), held_dates.to_numpy())
+    oriented: dict[str, float] = {}
+    for c in uniq:
+        ic = _fitness.rank_ic_series(frame[c].to_numpy(), y, by_time=times)
+        fitted = _fitness._nanmean(ic[~is_held])
+        sign = -1.0 if np.isfinite(fitted) and fitted < 0.0 else 1.0
+        oriented[c] = sign * float(_fitness._nanmean(ic[is_held]))
+    held = np.asarray([oriented[c] for c in cols], dtype=np.float64)
 
     ok = np.isfinite(search_scores) & np.isfinite(held)
     if int(ok.sum()) < 5:

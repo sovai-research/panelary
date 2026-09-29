@@ -16,7 +16,8 @@ check is a **future-perturbation experiment**:
 This module exposes two assertions built on that mechanism:
 
 * :func:`assert_no_lookahead` — split the shared time axis at a cut ``t`` and
-  assert that perturbing ``time > t`` never changes any output at ``time <= t``.
+  assert that perturbing ``time > t`` never changes any output at ``time <= t``,
+  at every cut of a deterministic spread along the axis.
 * :func:`assert_no_train_test_leak` — perturb a *test* fold and assert that the
   *train*-fold outputs are unchanged (the CV-boundary version of the same idea).
 
@@ -250,20 +251,24 @@ def _require_keys(out: pl.DataFrame, entity: str, time: str, label: str) -> None
         )
 
 
+#: One perturbation experiment: ``(perturb_mask, compare_mask, kept_desc,
+#: changed_desc)``.
+_Region = tuple[pl.Expr, pl.Expr, str, str]
+
+
 def _assert_invariant(
     op: Any,
     pf: PanelFrame,
     *,
-    perturb_mask: pl.Expr,
-    compare_mask: pl.Expr,
+    regions: Sequence[_Region],
     tol: float,
-    kept_desc: str,
-    changed_desc: str,
 ) -> None:
-    """Core mechanism shared by both public assertions.
+    """Core mechanism shared by the perturbation assertions.
 
-    Perturb the rows selected by ``perturb_mask``, re-run ``op``, and assert
-    every output cell in the ``compare_mask`` region is unchanged within ``tol``.
+    For each region, perturb the rows selected by its ``perturb_mask``, re-run
+    ``op``, and assert every output cell in its ``compare_mask`` region is
+    unchanged within ``tol``. The unperturbed baseline is computed once and
+    shared by every region, so each extra region costs one run of ``op``.
     """
     entity, time = pf.entity_col, pf.time_col
     df = pf.collect()
@@ -277,28 +282,112 @@ def _assert_invariant(
 
     apply = _make_apply(op, pf, df)
     base_out = apply(df)
-    pert_df = _perturb(df, num_cols, perturb_mask)
-    pert_out = apply(pert_df)
+    _require_keys(base_out, entity, time, "baseline")
 
-    for out, label in ((base_out, "baseline"), (pert_out, "perturbed")):
-        _require_keys(out, entity, time, label)
+    for perturb_mask, compare_mask, kept_desc, changed_desc in regions:
+        pert_out = apply(_perturb(df, num_cols, perturb_mask))
+        _require_keys(pert_out, entity, time, "perturbed")
 
-    base_cmp = base_out.filter(compare_mask).sort([entity, time])
-    pert_cmp = pert_out.filter(compare_mask).sort([entity, time])
+        base_cmp = base_out.filter(compare_mask).sort([entity, time])
+        pert_cmp = pert_out.filter(compare_mask).sort([entity, time])
 
-    hit = _first_mismatch(base_cmp, pert_cmp, entity=entity, time=time, tol=tol)
-    if hit is not None:
-        col, ent_val, time_val = hit
-        raise AssertionError(
-            "LOOK-AHEAD LEAK DETECTED: perturbing the future "
-            f"({changed_desc}) changed output column {col!r} at "
-            f"{entity}={ent_val!r}, {time}={time_val!r}, which lies in the "
-            f"protected region ({kept_desc}). A leak-free operation's output at "
-            "a given time may depend only on data at that time or earlier "
-            "(within the entity). Express the feature walk-forward, e.g. "
-            f"`expr.shift(k).over({entity!r})` with k >= 0, or a trailing "
-            "rolling window."
-        )
+        hit = _first_mismatch(base_cmp, pert_cmp, entity=entity, time=time, tol=tol)
+        if hit is not None:
+            col, ent_val, time_val = hit
+            raise AssertionError(
+                "LOOK-AHEAD LEAK DETECTED: perturbing the future "
+                f"({changed_desc}) changed output column {col!r} at "
+                f"{entity}={ent_val!r}, {time}={time_val!r}, which lies in the "
+                f"protected region ({kept_desc}). A leak-free operation's output "
+                "at a given time may depend only on data at that time or earlier "
+                "(within the entity). Express the feature walk-forward, e.g. "
+                f"`expr.shift(k).over({entity!r})` with k >= 0, or a trailing "
+                "rolling window."
+            )
+
+
+# --------------------------------------------------------------------------- #
+# Where to cut
+# --------------------------------------------------------------------------- #
+#: Anchors of the default cut spread, as fractions of the distinct-time axis.
+_CUT_ANCHORS: tuple[float, ...] = (0.2, 0.4, 0.6, 0.8)
+
+
+def _default_cut_positions(n_times: int) -> list[int]:
+    """Positions ``i`` of the default cuts ``times[i]`` on an ``n_times`` axis.
+
+    A consecutive **pair** of cuts at each of four anchors spread along the
+    axis. One cut is not enough, and neither is a handful of round fractions:
+    a leak confined to a calendar period (a period mean broadcast back, a
+    period-end value) is invisible at a cut on a period's last step, and a
+    period length can divide ``n_times / 2`` or ``n_times / 4`` just as easily
+    as it divides nothing. Of two consecutive cuts at most one can end a
+    period longer than one step, so every pair has a cut strictly inside one.
+    The last time is never a cut (nothing would lie beyond it).
+    """
+    positions: set[int] = set()
+    for frac in _CUT_ANCHORS:
+        i = int(frac * n_times) - 1
+        positions.update((i, i + 1))
+    return sorted(i for i in positions if 0 <= i <= n_times - 2)
+
+
+def _default_cuts(times: Sequence[Any]) -> list[Any]:
+    """The cut points the leak assertions test when none are given.
+
+    Parameters
+    ----------
+    times : sequence
+        The sorted distinct times of the panel.
+
+    Returns
+    -------
+    list
+        Up to eight time values: a consecutive pair at 20%, 40%, 60% and 80% of
+        the axis (fewer on a short axis). Deterministic, so a failure
+        reproduces.
+
+    Examples
+    --------
+    >>> _default_cuts(list(range(10)))
+    [1, 2, 3, 4, 5, 6, 7, 8]
+    >>> _default_cuts(list(range(240)))
+    [47, 48, 95, 96, 143, 144, 191, 192]
+    """
+    times = list(times)
+    return [times[i] for i in _default_cut_positions(len(times))]
+
+
+def _resolve_cuts(
+    times: Sequence[Any], cut: Any, cuts: Sequence[Any] | None, *, method: str
+) -> list[Any]:
+    """``cut`` / ``cuts`` / the default spread, validated against the axis."""
+    if cut is not None and cuts is not None:
+        raise ValueError(f"{method}: pass `cut` or `cuts`, not both.")
+    if cut is None and cuts is None:
+        return _default_cuts(times)
+    chosen = [cut] if cut is not None else list(cuts or [])
+    if not chosen:
+        raise ValueError(f"{method}: `cuts` must name at least one cut.")
+    truncate = method == "assert_prefix_invariant"
+    for c in chosen:
+        if c >= times[-1]:
+            what = (
+                "truncates nothing" if truncate else "leaves no future rows to perturb"
+            )
+            raise ValueError(
+                f"`cut={c!r}` {what} (max time is {times[-1]!r}); choose a smaller cut."
+            )
+        if c < times[0]:
+            what = (
+                "leaves no rows to compare"
+                if truncate
+                else "leaves no past rows to protect"
+            )
+            raise ValueError(
+                f"`cut={c!r}` {what} (min time is {times[0]!r}); choose a larger cut."
+            )
+    return chosen
 
 
 # --------------------------------------------------------------------------- #
@@ -312,12 +401,19 @@ def assert_no_lookahead(
     time: str | None = None,
     tol: float = 1e-9,
     cut: Any = None,
+    cuts: Sequence[Any] | None = None,
 ) -> None:
     """Assert ``op`` never looks ahead on ``panel`` (future-perturbation test).
 
-    Splits the shared, sorted unique-time axis at ``cut`` and verifies that
+    Splits the shared, sorted unique-time axis at a cut and verifies that
     corrupting every value at ``time > cut`` leaves every output value at
-    ``time <= cut`` bit-identical (within ``tol``).
+    ``time <= cut`` bit-identical (within ``tol``) -- at **every** cut tested.
+    By default that is a consecutive pair of cuts at
+    20%, 40%, 60% and 80% of the axis. A single cut is not a test: a leak
+    confined to a calendar period (a period mean broadcast back to its rows) is
+    invisible at a cut on a period's last step. On 250 dates with 5-step
+    periods, such a leak passed the old single median cut and failed at 200 of
+    the other 249.
 
     Parameters
     ----------
@@ -334,17 +430,21 @@ def assert_no_lookahead(
     tol : float, default=1e-9
         Absolute tolerance for the "unchanged" comparison of numeric outputs.
     cut : optional
-        A specific time value to split at (``time <= cut`` is protected). By
-        default the median unique time is used so both sides are non-empty.
+        A single time value to split at (``time <= cut`` is protected).
+    cuts : sequence, optional
+        Several time values to split at, each tested in turn. Pass at most one
+        of ``cut`` and ``cuts``; with neither, the default spread above is used.
+        Each cut costs one extra run of ``op``.
 
     Raises
     ------
     AssertionError
         If any protected (past) output cell changes when the future is
         perturbed — i.e. the operation leaks look-ahead information. The message
-        names the first offending column, entity, and time.
+        names the cut and the first offending column, entity, and time.
     ValueError
-        If the panel has fewer than two distinct times, or no numeric features.
+        If the panel has fewer than two distinct times, or no numeric features,
+        or a cut leaves no past or no future.
 
     Examples
     --------
@@ -368,30 +468,22 @@ def assert_no_lookahead(
             "assert_no_lookahead needs at least two distinct time steps to split "
             f"past from future, got {len(times)}."
         )
-    if cut is None:
-        mid = len(times) // 2
-        cut = times[mid - 1]  # times[:mid] <= cut, times[mid:] > cut (both non-empty)
-    else:
-        if cut >= times[-1]:
-            raise ValueError(
-                f"`cut={cut!r}` leaves no future rows to perturb (max time is "
-                f"{times[-1]!r}); choose a smaller cut."
-            )
-        if cut < times[0]:
-            raise ValueError(
-                f"`cut={cut!r}` leaves no past rows to protect (min time is "
-                f"{times[0]!r}); choose a larger cut."
-            )
+    chosen = _resolve_cuts(times, cut, cuts, method="assert_no_lookahead")
 
     tcol = pf.time_col
     _assert_invariant(
         op,
         pf,
-        perturb_mask=pl.col(tcol) > cut,
-        compare_mask=pl.col(tcol) <= cut,
+        regions=[
+            (
+                pl.col(tcol) > c,
+                pl.col(tcol) <= c,
+                f"{tcol} <= {c!r}",
+                f"{tcol} > {c!r}",
+            )
+            for c in chosen
+        ],
         tol=tol,
-        kept_desc=f"{tcol} <= {cut!r}",
-        changed_desc=f"{tcol} > {cut!r}",
     )
 
 
@@ -477,33 +569,21 @@ def assert_no_train_test_leak(
     _assert_invariant(
         op,
         pf,
-        perturb_mask=pl.col(tcol).is_in(test_lit),
-        compare_mask=pl.col(tcol).is_in(train_lit),
+        regions=[
+            (
+                pl.col(tcol).is_in(test_lit),
+                pl.col(tcol).is_in(train_lit),
+                "the train fold",
+                "the test fold",
+            )
+        ],
         tol=tol,
-        kept_desc="the train fold",
-        changed_desc="the test fold",
     )
 
 
 # --------------------------------------------------------------------------- #
 # Prefix invariance: the length-dependence instrument
 # --------------------------------------------------------------------------- #
-def _default_cuts(times: Sequence[Any]) -> list[Any]:
-    """Pick several truncation points spread along the time axis.
-
-    One cut is not enough. A length-dependent quantity can coincide with the
-    full-panel value at a particular prefix length (an entity whose 6-row and
-    12-row means happen to agree to ``tol``, a window that only starts biting
-    once the history is long enough), so a single cut can miss it by luck.
-    Quarter, half and three-quarter cuts probe short, medium and long prefixes;
-    they collapse to fewer distinct cuts on a short axis. The last time is never
-    a cut — truncating there is the full panel, and the check would be vacuous.
-    """
-    n = len(times)
-    idxs = sorted({max(0, min(n - 2, (n * k) // 4 - 1)) for k in (1, 2, 3)})
-    return [times[i] for i in idxs]
-
-
 def assert_prefix_invariant(
     op: Any,
     panel: Any,
@@ -512,6 +592,7 @@ def assert_prefix_invariant(
     time: str | None = None,
     tol: float = 1e-9,
     cut: Any = None,
+    cuts: Sequence[Any] | None = None,
 ) -> None:
     """Assert ``op`` is prefix-invariant: its output never depends on later rows.
 
@@ -556,8 +637,12 @@ def assert_prefix_invariant(
         null-vs-NaN are mismatches.
     cut : optional
         A single truncation point to test (the panel is cut to ``time <= cut``).
-        By default several cuts spread along the time axis are tested, since one
-        prefix length can match the full panel by coincidence.
+    cuts : sequence, optional
+        Several truncation points, each tested in turn. Pass at most one of
+        ``cut`` and ``cuts``. With neither, the default spread is used -- the
+        same consecutive pairs of cuts as :func:`assert_no_lookahead`, since one
+        prefix length can match the full panel by coincidence, and a cut on a
+        period's last step hides a period-confined leak.
 
     Raises
     ------
@@ -597,27 +682,14 @@ def assert_prefix_invariant(
             "assert_prefix_invariant needs at least two distinct time steps to "
             f"form a proper prefix, got {len(times)}."
         )
-    if cut is None:
-        cuts = _default_cuts(times)
-    else:
-        if cut >= times[-1]:
-            raise ValueError(
-                f"`cut={cut!r}` truncates nothing (max time is {times[-1]!r}); "
-                "choose a smaller cut."
-            )
-        if cut < times[0]:
-            raise ValueError(
-                f"`cut={cut!r}` leaves no rows to compare (min time is "
-                f"{times[0]!r}); choose a larger cut."
-            )
-        cuts = [cut]
+    chosen = _resolve_cuts(times, cut, cuts, method="assert_prefix_invariant")
 
     df = pf.collect()
     apply = _make_apply(op, pf, df, method="assert_prefix_invariant")
     full_out = apply(df)
     _require_keys(full_out, ecol, tcol, "full-panel")
 
-    for c in cuts:
+    for c in chosen:
         prefix_out = apply(df.filter(pl.col(tcol) <= c))
         _require_keys(prefix_out, ecol, tcol, "truncated-panel")
 

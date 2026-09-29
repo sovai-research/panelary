@@ -426,6 +426,8 @@ else:
 #:   covariance   numpy + polars only, but no caller needs it at import time
 #:                and the cold-import budget is shared (plan
 #:                `covariance-and-market-state.md` section 4.1)
+#:   evolve       ~7-10 ms, and it registers its 52 operator FeatureSpecs,
+#:                which a light `import panelary` has no reason to carry
 #:
 #: They resolve on first attribute access via the PEP 562 hook below, so
 #: ``pn.forecasting`` works without making every ``import panelary``
@@ -438,6 +440,7 @@ _LAZY_SUBMODULES = (
     "backtesting",
     "embed",
     "covariance",
+    "evolve",
 )
 
 

@@ -22,7 +22,7 @@ What's here
     :func:`bsadf_sequence` is the backward sup-ADF: at each endpoint, the
     supremum of the ADF t-statistic over all admissible start dates. Its
     window's right edge is pinned at ``t``, so every regression in the supremum
-    terminates at ``t``. ``T=1000`` exhaustive (452,676 windows) in ~0.02 s of
+    terminates at ``t``. ``T=1000`` exhaustive (452,676 windows) in ~0.012 s of
     pure NumPy, against 0.78 s for the fastest published C++ implementation.
 
 :mod:`~panelary.detect._critvals` -- **calibration without leakage**
@@ -55,10 +55,11 @@ Leak-safety
 Three rules govern the whole package, each with a measured consequence:
 
 **No quantity may depend on the length of the data you happen to hold.** The
-conventional minimum-window rule ``floor(T(0.01 + 1.8/sqrt(T)))`` revises 46% of
-already-published dates by more than 0.05 when ``T`` grows from 800 to 1600
-(mean ``|delta|`` 0.160, max 1.576). ``min_window`` is therefore a required
-absolute-integer hyperparameter with no default derived from the sample.
+conventional minimum-window rule ``floor(T(0.01 + 1.8/sqrt(T)))`` revises 41.2%
+of already-published statistics by more than 0.05 when ``T`` grows from 800 to
+1600 (300 null paths; mean ``|delta|`` 0.123, max 2.515). ``min_window`` is
+therefore a required absolute-integer hyperparameter with no default derived
+from the sample.
 
 **Simulated critical values are safe; bootstrapped ones are not.** The Monte
 Carlo null is ``cumsum(randn(n))`` -- it contains no data and depends only on
@@ -87,10 +88,11 @@ constraint** -- a 10-period bubble at ``delta=1.03`` is detected with
 probability ~0.2, so short mild episodes are missed entirely.
 
 Cross-sectional pooling is the one real escape, and it is contingent on
-:func:`residualise`. With equicorrelated shocks and no bubble anywhere, the 95th
-percentile of sup-over-``t`` breadth runs 0.030 at ``rho=0``, 0.347 at
-``rho=0.6`` and **0.830 at ``rho=0.9``** -- the effective sample size is roughly
-``1/rho``, not ``N``. Project out the common factor first.
+:func:`residualise`. With equicorrelated shocks and no bubble anywhere
+(``N = 200``, ``T = 300``, family-wise entity threshold), the 95th percentile of
+sup-over-``t`` breadth runs 0.010 at ``rho=0``, 0.096 at ``rho=0.6`` and
+**0.251 at ``rho=0.9``** -- the effective sample size is roughly ``1/rho``, not
+``N``. Project out the common factor first.
 
 References
 ----------
