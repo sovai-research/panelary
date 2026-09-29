@@ -600,11 +600,12 @@ def test_panelframe_and_bare_frame_agree() -> None:
 
 @pytest.mark.parametrize("name", ["avg_correlation", "common_idio_vol"])
 def test_registered_as_rowwise_frame_ops(name: str) -> None:
+    fn = getattr(cov, name)  # the first public access registers the catalogue
     spec = registry.get(name)
     assert spec.namespace == "covariance"
     assert (spec.input_shape, spec.output_shape) == ("frame", "frame")
     assert spec.safe_scope == "rowwise" and spec.leakage_safe and not spec.panel_safe
-    assert spec.backend_fn is getattr(cov, name)
+    assert spec.backend_fn is fn
     assert "T^2" not in (spec.cost_hint or "")
 
 

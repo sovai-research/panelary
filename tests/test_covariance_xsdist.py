@@ -498,9 +498,10 @@ def test_bad_arguments_raise(call, error, match: str) -> None:
     "name", ["kelly_jiang_tail", "kelly_jiang_beta", "xs_wasserstein", "avg_skewness"]
 )
 def test_registered_as_rowwise_frame_ops(name: str) -> None:
+    fn = getattr(cov, name)  # the first public access registers the catalogue
     spec = registry.get(name)
     assert spec.namespace == "covariance"
     assert (spec.input_shape, spec.output_shape) == ("frame", "frame")
     assert spec.safe_scope == "rowwise" and spec.leakage_safe and not spec.panel_safe
-    assert spec.backend_fn is getattr(cov, name)
+    assert spec.backend_fn is fn
     assert "T^2" not in (spec.cost_hint or "")
