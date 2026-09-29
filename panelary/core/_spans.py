@@ -156,6 +156,10 @@ class SpanTable:
     start_tpos, end_tpos : ndarray of int64
         Positions of ``t0`` and ``t1`` on the panel's sorted unique-time axis
         (``end_tpos`` = last unique time ``<= t1``, over every entity).
+    segments : ndarray of int64
+        First grid row of **every** entity (one entry per entity, ascending).
+        Span sums align their blocks to these, so a label's sums depend only
+        on its own entity's rows -- appending data leaves them bitwise equal.
     n_rows : int
         Number of grid rows ``R``.
     n_times : int
@@ -174,6 +178,7 @@ class SpanTable:
     entity_code: NDArray[np.int64]
     start_tpos: NDArray[np.int64]
     end_tpos: NDArray[np.int64]
+    segments: NDArray[np.int64]
     n_rows: int
     n_times: int
     n_dropped: int
@@ -203,6 +208,7 @@ class SpanTable:
             entity_code=self.entity_code[m],
             start_tpos=self.start_tpos[m],
             end_tpos=self.end_tpos[m],
+            segments=self.segments,
             n_rows=self.n_rows,
             n_times=self.n_times,
             n_dropped=self.n_dropped,
@@ -343,6 +349,7 @@ def _spans_from_t1(
         entity_code=seg[idx],
         start_tpos=tpos[idx],
         end_tpos=end_tpos,
+        segments=first.astype(np.int64),
         n_rows=n_rows,
         n_times=n_times,
         n_dropped=int(n_rows - idx.shape[0]),
@@ -372,23 +379,29 @@ def _span_sums(
     end: NDArray[np.int64],
     *,
     offset: int = 0,
+    segments: NDArray[np.int64] | None = None,
     block: int = _BLOCK,
 ) -> NDArray[np.float64]:
     """``sum(v[start + offset : end + 1])`` for every span, accurately.
 
     A single global prefix sum loses accuracy as the grid grows: its magnitude,
     and so the rounding of every difference of two prefixes, scales with ``R``
-    (measured 2.9e-12 relative at ``R = 2e5``, growing). Here the row axis is
-    cut into fixed blocks of ``block`` rows with inclusive prefixes *inside*
-    each block (one sequential ``np.cumsum`` along a padded
-    ``(n_blocks, block)`` view). A span inside one block is a difference of two
-    in-block prefixes; a span crossing blocks is the tail of its first block,
-    plus the head of its last block, plus the sum of the whole blocks in between
-    -- which is itself a span sum over the array of block totals, computed by
-    the same function (a ``block``-ary tree, ``log_block(R)`` levels deep).
-    Every difference therefore involves partial sums of at most ``block``
-    terms, so the absolute error is about ``block * eps * max|v|`` whatever the
-    size of the grid. Empty spans (``start + offset > end``) sum to 0.
+    (measured 2.9e-12 relative at ``R = 2e5``, growing). Here each segment
+    (entity) is cut into blocks of ``block`` rows that restart at the segment
+    start, with inclusive prefixes *inside* each block (one sequential
+    ``np.cumsum`` along a padded ``(n_blocks, block)`` view). A span inside one
+    block is a difference of two in-block prefixes; a span crossing blocks is
+    the tail of its first block, plus the head of its last block, plus the sum
+    of the whole blocks in between -- itself a span sum over the array of block
+    totals, computed by the same function (a ``block``-ary tree, about
+    ``log_block(R)`` levels deep).
+
+    Every rounded partial sum therefore covers at most ``block`` terms, so the
+    absolute error is about ``block * eps * max|v|`` whatever the size of the
+    grid; and because blocks are aligned to ``segments`` (the first row of each
+    entity), a span's result depends only on its own entity's rows. Spans must
+    not cross a segment boundary. Empty spans (``start + offset > end``) sum
+    to 0.
     """
     x = np.asarray(v, dtype=np.float64)
     s = np.asarray(start, dtype=np.int64) + offset
@@ -397,7 +410,12 @@ def _span_sums(
     ok = s <= e
     if x.shape[0] == 0 or not bool(ok.any()):
         return out
-    out[ok] = _span_sums_nonempty(x, s[ok], e[ok], block)
+    seg = (
+        np.zeros(1, dtype=np.int64)
+        if segments is None
+        else np.asarray(segments, dtype=np.int64)
+    )
+    out[ok] = _span_sums_nonempty(x, s[ok], e[ok], seg, block)
     return out
 
 
@@ -405,19 +423,30 @@ def _span_sums_nonempty(
     x: NDArray[np.float64],
     s: NDArray[np.int64],
     e: NDArray[np.int64],
+    segments: NDArray[np.int64],
     block: int,
 ) -> NDArray[np.float64]:
     """:func:`_span_sums` for spans known to satisfy ``s <= e`` (recursive)."""
     n = x.shape[0]
-    n_blocks = -(-n // block)
+    seg_len = np.diff(np.r_[segments, n])
+    seg_blocks = -(-seg_len // block)
+    block_first = np.r_[0, np.cumsum(seg_blocks)[:-1]].astype(np.int64)
+    n_blocks = int(seg_blocks.sum())
+    # Padded position of every row: its segment's first block, then its offset
+    # inside the segment.
+    local = np.arange(n, dtype=np.int64) - np.repeat(segments, seg_len)
+    where = np.repeat(block_first * block, seg_len) + local
     padded = np.zeros(n_blocks * block, dtype=np.float64)
-    padded[:n] = x
+    padded[where] = x
     prefix = np.cumsum(padded.reshape(n_blocks, block), axis=1)
     flat = prefix.ravel()
-    head = np.where(s % block != 0, flat[np.maximum(s - 1, 0)], 0.0)
-    res = flat[e] - head
-    bs = s // block
-    be = e // block
+
+    ps = where[s]
+    pe = where[e]
+    head = np.where(ps % block != 0, flat[np.maximum(ps - 1, 0)], 0.0)
+    res = flat[pe] - head
+    bs = ps // block
+    be = pe // block
     cross = bs != be
     if bool(cross.any()):
         totals = prefix[:, -1]
@@ -427,9 +456,9 @@ def _span_sums_nonempty(
         inner = c_be > c_bs + 1
         if bool(inner.any()):
             middle[inner] = _span_sums_nonempty(
-                totals, c_bs[inner] + 1, c_be[inner] - 1, block
+                totals, c_bs[inner] + 1, c_be[inner] - 1, block_first, block
             )
-        res[cross] = (totals[c_bs] - head[cross]) + middle + flat[e[cross]]
+        res[cross] = (totals[c_bs] - head[cross]) + middle + flat[pe[cross]]
     return res
 
 
@@ -445,4 +474,6 @@ def _uniqueness(
     inv = np.zeros(c.shape[0], dtype=np.float64)
     pos = c > 0
     inv[pos] = 1.0 / c[pos]
-    return _span_sums(inv, spans.start, spans.end) / spans.length
+    return (
+        _span_sums(inv, spans.start, spans.end, segments=spans.segments) / spans.length
+    )

@@ -323,3 +323,53 @@ def test_subset_and_covers() -> None:
     assert sub.covers(np.array([3])).tolist() == [False, True, False]
     with pytest.raises(ValueError):
         table.subset(np.array([True]))
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Date,
+        pl.Datetime("us"),
+        pl.Datetime("ns", "UTC"),
+        pl.Datetime("ms", "Asia/Tokyo"),
+    ],
+)
+def test_panel_splitters_on_temporal_axes(dtype: pl.DataType) -> None:
+    """Regression: PanelFrame folds used to raise on every Date/Datetime panel.
+
+    ``_subset_by_times`` built a Series from a list of numpy datetime64 scalars
+    (an Object series polars cannot cast), so ``PurgedKFold.split`` and
+    ``cross_validate`` failed on any temporal time column.
+    """
+    base = pl.DataFrame(
+        {
+            "id": ["a"] * 12 + ["b"] * 12,
+            "t": [dt.datetime(2021, 3, 1) + dt.timedelta(days=i) for i in range(12)]
+            * 2,
+            "x": np.arange(24.0),
+        }
+    )
+    col = pl.col("t")
+    if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None:
+        col = col.dt.replace_time_zone(dtype.time_zone).dt.cast_time_unit(
+            dtype.time_unit
+        )
+    else:
+        col = col.cast(dtype)
+    df = base.with_columns(col)
+    for cv in (
+        PurgedKFold(n_splits=3),
+        CombinatorialPurgedCV(n_groups=4, n_test_groups=2),
+    ):
+        idx = list(type(cv)(**_cv_kwargs(cv), return_indices=True).split(df))
+        for (train, test), (tr_pos, te_pos) in zip(cv.split(df), idx, strict=True):
+            assert train.collect().height == 2 * tr_pos.size
+            assert test.collect().height == 2 * te_pos.size
+            assert test.collect().schema["t"] == df.schema["t"]
+
+
+def _cv_kwargs(cv: object) -> dict:
+    if isinstance(cv, PurgedKFold):
+        return {"n_splits": cv.n_splits}
+    assert isinstance(cv, CombinatorialPurgedCV)
+    return {"n_groups": cv.n_groups, "n_test_groups": cv.n_test_groups}

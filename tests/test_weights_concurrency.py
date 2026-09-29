@@ -118,6 +118,37 @@ def test_span_sums_block_paths(block: int, offset: int) -> None:
         assert np.all(got[single] == 0.0)
 
 
+@pytest.mark.parametrize("block", [2, 5, 64])
+def test_span_sums_segment_aligned(block: int) -> None:
+    """Blocks restart at every segment: spans inside segments, many lengths."""
+    rng = np.random.default_rng(block)
+    lens = rng.integers(1, 400, 30)
+    segments = np.r_[0, np.cumsum(lens)[:-1]].astype(np.int64)
+    n = int(lens.sum())
+    v = rng.normal(size=n)
+    seg_of = rng.integers(0, 30, 500)
+    lo = segments[seg_of]
+    hi = lo + lens[seg_of] - 1
+    start = np.minimum(lo + rng.integers(0, 400, 500), hi)
+    end = np.minimum(start + rng.integers(0, 300, 500), hi)
+    order = np.argsort(start, kind="stable")
+    start, end = start[order], end[order]
+    spans = list(zip(start.tolist(), end.tolist(), strict=True))
+    for offset in (0, 1):
+        got = _span_sums(v, start, end, offset=offset, segments=segments, block=block)
+        np.testing.assert_allclose(
+            got, ref.ref_span_sums(v, spans, offset), rtol=1e-12, atol=1e-12
+        )
+    # A segment's sums do not depend on the rows of other segments.
+    k = int(seg_of[order][0])
+    mine = (start >= segments[k]) & (end < segments[k] + lens[k])
+    v2 = v.copy()
+    v2[: segments[k]] = rng.normal(size=int(segments[k]))
+    a = _span_sums(v, start[mine], end[mine], segments=segments, block=block)
+    b = _span_sums(v2, start[mine], end[mine], segments=segments, block=block)
+    assert np.array_equal(a, b)
+
+
 def test_span_sums_accuracy_does_not_grow_with_the_grid() -> None:
     """A single global prefix would lose ~R*eps; block-local prefixes do not."""
     rng = np.random.default_rng(0)
