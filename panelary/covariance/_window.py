@@ -197,13 +197,13 @@ def universe(
     return np.flatnonzero(ok)
 
 
-def _nonconstant(X: NDArray[np.float64]) -> NDArray[np.bool_]:
-    """Columns with at least two distinct observed values in the window.
-
-    ``fmin`` / ``fmax`` skip NaN, so this is two reductions and no copy.
-    """
-    with np.errstate(invalid="ignore"):
-        return np.fmax.reduce(X, axis=0) > np.fmin.reduce(X, axis=0)
+def _gather(R: NDArray[np.float64], lo: int, hi: int, idx: NDArray[np.intp]):
+    """``R[lo:hi, idx]`` as a fresh C-contiguous array (a slice copy when
+    ``idx`` is one contiguous run, which is ~7x cheaper than fancy indexing
+    and yields the same values in the same layout)."""
+    if idx.size and int(idx[-1]) - int(idx[0]) + 1 == idx.size:
+        return R[lo:hi, int(idx[0]) : int(idx[-1]) + 1].copy()
+    return np.ascontiguousarray(R[lo:hi, idx])
 
 
 def window_at(
@@ -219,23 +219,26 @@ def window_at(
 ) -> tuple[WindowStats | None, NDArray[np.intp]]:
     """The compacted window ending at position ``t`` and its universe.
 
-    ``idx`` restricts the universe (a group's members). Entities that are
-    constant over the window are dropped (they have no correlation). Returns
+    ``idx`` restricts the universe (a group's members). Entities with zero
+    variance over the window are dropped (they have no correlation). Returns
     ``(None, idx)`` when fewer than ``min_entities`` remain.
     """
     if idx is None:
         idx = universe(pm, t, window, min_coverage)
     if idx.size < min_entities:
         return None, idx
-    X = np.ascontiguousarray(pm.R[t + 1 - window : t + 1, idx])
-    keep = _nonconstant(X)
-    if not keep.all():
-        idx = idx[keep]
+    lo = t + 1 - window
+    X = _gather(pm.R, lo, t + 1, idx)
+    count = (pm.counts[t + 1, idx] - pm.counts[lo, idx]).astype(np.int64)
+    ws = window_stats(
+        X, space=space, asof=pm.times[t], count=count, copy=False, drop_constant=True
+    )
+    if ws.kept is not None:
+        idx = idx[ws.kept]
         if idx.size < min_entities:
             return None, idx
-        X = np.ascontiguousarray(X[:, keep])
-    ents = pm.entity_labels(idx) if labels else None
-    ws = window_stats(X, space=space, entities=ents, asof=pm.times[t])
+    if labels:
+        ws.entities = pm.entity_labels(idx)
     return ws, idx
 
 

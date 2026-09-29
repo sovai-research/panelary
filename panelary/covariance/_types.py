@@ -138,6 +138,8 @@ class WindowStats:
         Entity labels, aligned with the columns of ``Z``.
     asof : Any
         The date whose window this is (``None`` for a bare matrix).
+    kept : ndarray of bool, optional
+        With ``drop_constant=True``: which input columns were kept.
     """
 
     Z: NDArray[np.float64]
@@ -148,6 +150,7 @@ class WindowStats:
     space: str
     entities: tuple[Any, ...]
     asof: Any = None
+    kept: NDArray[np.bool_] | None = None
     _gram: NDArray[np.float64] | None = field(default=None, repr=False)
     _spectrum: Spectrum | None = field(default=None, repr=False)
 

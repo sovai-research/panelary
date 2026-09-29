@@ -45,6 +45,9 @@ def window_stats(
     assume_centered: bool = False,
     entities: tuple[Any, ...] | None = None,
     asof: Any = None,
+    count: NDArray[np.int64] | None = None,
+    copy: bool = True,
+    drop_constant: bool = False,
 ) -> WindowStats:
     """Centre (and standardise) one ``(n, p)`` window.
 
@@ -62,6 +65,12 @@ def window_stats(
         Column labels; defaults to ``0 .. p-1``.
     asof : Any, optional
         The date the window ends on, carried onto every estimate.
+    count, copy
+        Passed to :func:`~panelary.covariance._missing.zero_after_demean`
+        (the as-of engine supplies exact counts and an owned array).
+    drop_constant : bool, default False
+        Drop columns with zero variance (or fewer than two observations)
+        instead of raising, recording the kept ones in ``ws.kept``.
 
     Raises
     ------
@@ -71,7 +80,9 @@ def window_stats(
     """
     if space not in SPACES:
         raise ValueError(f"`space` must be one of {SPACES}, got {space!r}.")
-    Z, mean, count = zero_after_demean(X, assume_centered=assume_centered)
+    Z, mean, count = zero_after_demean(
+        X, assume_centered=assume_centered, count=count, copy=copy
+    )
     n, p = Z.shape
     if n < 2 or p < 1:
         raise ValueError(
@@ -79,17 +90,29 @@ def window_stats(
         )
     n_eff = float(n if assume_centered else n - 1)
     ddof = 0 if assume_centered else 1
-    if space == "correlation":
+    kept = None
+    var = None
+    if space == "correlation" or drop_constant:
         with np.errstate(invalid="ignore", divide="ignore"):
             var = np.einsum("ij,ij->j", Z, Z) / (count - ddof)
         bad = ~(np.isfinite(var) & (var > 0.0))
         if bad.any():
-            cols = np.flatnonzero(bad)[:8].tolist()
-            raise ValueError(
-                "correlation space needs every column to vary over the window; "
-                f"column(s) {cols} have zero variance or fewer than {ddof + 1} "
-                "observations. Drop them, or use space='covariance'."
-            )
+            if not drop_constant:
+                cols = np.flatnonzero(bad)[:8].tolist()
+                raise ValueError(
+                    "correlation space needs every column to vary over the "
+                    f"window; column(s) {cols} have zero variance or fewer than "
+                    f"{ddof + 1} observations. Drop them, or use "
+                    "space='covariance'."
+                )
+            kept = ~bad
+            Z = np.ascontiguousarray(Z[:, kept])
+            mean, count, var = mean[kept], count[kept], var[kept]
+            p = Z.shape[1]
+            if entities is not None:
+                entities = tuple(e for e, k in zip(entities, kept, strict=True) if k)
+    if space == "correlation":
+        assert var is not None
         scale = np.sqrt(var)
         Z /= scale
     else:
@@ -106,6 +129,7 @@ def window_stats(
         space=space,
         entities=labels,
         asof=asof,
+        kept=kept,
     )
 
 

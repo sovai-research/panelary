@@ -59,11 +59,13 @@ _CATALOGUE_MODULES: list[str] = []
 if TYPE_CHECKING:  # pragma: no cover - static names for type checkers and IDEs
     from panelary.core._schedule import Refit, Schedule
     from panelary.covariance._estimate import METHODS, estimate
+    from panelary.covariance._estimator import MarketState, Turbulence
     from panelary.covariance._state import (
         FEATURES,
         market_loading,
         market_state,
     )
+    from panelary.covariance._turbulence import turbulence
     from panelary.covariance._types import (
         CovEstimate,
         SingularCovarianceError,
@@ -89,8 +91,12 @@ _EXPORTS.update(
         "FEATURES": "_state",
         "market_state": "_state",
         "market_loading": "_state",
+        "turbulence": "_turbulence",
+        "MarketState": "_estimator",
+        "Turbulence": "_estimator",
     }
 )
+_CATALOGUE_MODULES += ["_estimator"]  # registers market_state / turbulence
 # --------------------------------------------------------------------------- #
 # end cov-core block
 # --------------------------------------------------------------------------- #

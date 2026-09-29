@@ -25,7 +25,11 @@ MISSING_POLICIES = ("zero_after_demean",)
 
 
 def zero_after_demean(
-    X: Any, *, assume_centered: bool = False
+    X: Any,
+    *,
+    assume_centered: bool = False,
+    count: NDArray[np.int64] | None = None,
+    copy: bool = True,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
     """Centre each column on its observed mean, then zero the missing cells.
 
@@ -35,6 +39,12 @@ def zero_after_demean(
         One window; non-finite cells are missing. Float32 is upcast.
     assume_centered : bool, default False
         Skip the centring (the mean is taken to be 0).
+    count : ndarray of int64, optional
+        Observed cells per column, when the caller already knows them (the
+        as-of engine reads them off its prefix counts). Must be exact.
+    copy : bool, default True
+        ``False`` works in place on ``X``, which must then be a C-contiguous
+        float64 array the caller owns. The arithmetic is identical.
 
     Returns
     -------
@@ -43,13 +53,25 @@ def zero_after_demean(
         ``mean`` the removed per-column means; ``count`` the observed cells
         per column.
     """
-    A = np.array(X, dtype=np.float64, order="C", copy=True)
+    if copy:
+        A = np.array(X, dtype=np.float64, order="C", copy=True)
+    else:
+        A = X
+        if not (A.dtype == np.float64 and A.flags.c_contiguous):
+            raise ValueError("copy=False needs a C-contiguous float64 array.")
     if A.ndim != 2:
         raise ValueError(f"expected a 2-D (n, p) window, got shape {A.shape}.")
-    finite = np.isfinite(A)
-    count = finite.sum(axis=0).astype(np.int64)
-    all_finite = bool(finite.all())
+    n = A.shape[0]
+    finite = None
+    if count is None:
+        finite = np.isfinite(A)
+        count = np.count_nonzero(finite, axis=0).astype(np.int64)
+    else:
+        count = np.asarray(count, dtype=np.int64)
+    all_finite = bool(count.size == 0 or int(count.min()) == n)
     if not all_finite:
+        if finite is None:
+            finite = np.isfinite(A)
         A[~finite] = 0.0
     if assume_centered:
         mean = np.zeros(A.shape[1], dtype=np.float64)
@@ -58,7 +80,7 @@ def zero_after_demean(
         mean = A.sum(axis=0) / count
     mean = np.where(count > 0, mean, 0.0)
     A -= mean
-    if not all_finite:
+    if finite is not None and not all_finite:
         A[~finite] = 0.0
     # Corrected two-pass (Chan, Golub & LeVeque 1983): the first mean of data
     # at a large offset carries the summation error of numbers ~offset; the
@@ -68,6 +90,6 @@ def zero_after_demean(
         resid = A.sum(axis=0) / count
     resid = np.where(count > 0, resid, 0.0)
     A -= resid
-    if not all_finite:
+    if finite is not None and not all_finite:
         A[~finite] = 0.0
     return A, mean + resid, count

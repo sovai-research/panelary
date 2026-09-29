@@ -95,3 +95,32 @@ def test_section_1_1_at_q_2() -> None:
     # The silently-wrong baseline must stay wrong. Never loosen this.
     assert r["sample_solve"] >= 100.0
     assert r["sample_pinv"] >= 3.0
+
+
+def test_market_state_separates_planted_volatility_regimes() -> None:
+    """Section 7.5: avg_corr and the absorption ratio are higher in the
+    high-volatility regime planted by ``synth`` (read from GroundTruth)."""
+    import polars as pl
+
+    import panelary as pn
+
+    data = pn.synth.generate_panel(
+        seed=2, n_entities=60, n_periods=800, n_regimes=2, regime_vol_ratio=2.0,
+        missing_rate=0.0, entry_rate=0.0, exit_rate=0.0, initial_fraction=1.0,
+        break_rate=0.0,
+    )  # fmt: skip
+    high = int(np.argmax(data.truth.regime_vol))
+    state = pn.covariance.market_state(
+        data.panel, returns="value", window=20,
+        features=("absorption_ratio", "avg_corr"), entity="entity", time="time",
+    )  # fmt: skip
+    joined = state.join(data.truth.factors.select("time", "regime"), on="time")
+    means = (
+        joined.drop_nulls("avg_corr")
+        .group_by(pl.col("regime") == high)
+        .agg(pl.col("avg_corr").mean(), pl.col("absorption_ratio").mean())
+        .sort("regime")
+    )
+    low_row, high_row = means.row(0, named=True), means.row(1, named=True)
+    assert high_row["avg_corr"] > low_row["avg_corr"]
+    assert high_row["absorption_ratio"] > low_row["absorption_ratio"]
