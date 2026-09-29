@@ -108,6 +108,16 @@ try:
 except Exception:  # noqa: BLE001 - an import failure just means fewer specs
     _shape = None  # type: ignore[assignment]
 
+# `panelary.covariance` is a lazy subpackage (not loaded by `import panelary`)
+# whose frame-op specs register on the first public-name access -- loaded here
+# for the same reason as `evolve` and `shape` above.
+try:
+    import panelary.covariance as _covariance
+
+    _covariance.market_state  # noqa: B018 - the first access registers the specs
+except Exception:  # noqa: BLE001 - an import failure just means fewer specs
+    _covariance = None  # type: ignore[assignment]
+
 
 # --------------------------------------------------------------------------- #
 # Probe panel
@@ -294,6 +304,44 @@ _FRAME_OPS.update(
     {name: _shape_op(factory) for name, (_r, factory) in _SHAPE_FRAME_OPS.items()}
 )
 
+#: ``panelary.covariance`` frame ops, as ``name -> (rendering, callable)``. Both
+#: mix entities by design and are broadcast back onto the (entity, time) rows.
+#: ``window=5``: the probe panel's shortest entity has 12 rows.
+_COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
+    {}
+    if _covariance is None
+    else {
+        "market_state": (
+            "market_state(returns='x', window=5, ar_short=2, ar_long=4, "
+            "broadcast=True)",
+            lambda frame: _covariance.market_state(
+                frame,
+                returns=VALUE,
+                window=5,
+                ar_short=2,
+                ar_long=4,
+                broadcast=True,
+                entity=ENTITY,
+                time=TIME,
+            ),
+        ),
+        "turbulence": (
+            "turbulence(returns='x', window=5, refit=2, pct_window=6, broadcast=True)",
+            lambda frame: _covariance.turbulence(
+                frame,
+                returns=VALUE,
+                window=5,
+                refit=2,
+                pct_window=6,
+                broadcast=True,
+                entity=ENTITY,
+                time=TIME,
+            ),
+        ),
+    }
+)
+_FRAME_OPS.update({name: op for name, (_r, op) in _COVARIANCE_FRAME_OPS.items()})
+
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
 #: operator that does not hand back a panel cannot be checked by them.
@@ -437,6 +485,8 @@ def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
+    if spec.name in _COVARIANCE_FRAME_OPS:
+        return f"panelary.covariance.{_COVARIANCE_FRAME_OPS[spec.name][0]}"
     if spec.name in _FRAME_OPS:
         return f"panelary.factor.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
@@ -861,7 +911,17 @@ def test_window_evidence_coverage_is_accounted_for() -> None:
 #: a date on purpose, which is the whole point of a cross-sectional operator.
 #: Pinned rather than waved through, so a new entry has to be justified.
 _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
-    {"demean", "rank", "standardize", "ic", "orthogonalize", "portfolio_sort"}
+    {
+        "demean",
+        "rank",
+        "standardize",
+        "ic",
+        "orthogonalize",
+        "portfolio_sort",
+        # covariance: per-date functions of the cross-asset covariance matrix
+        "market_state",
+        "turbulence",
+    }
 )
 
 
