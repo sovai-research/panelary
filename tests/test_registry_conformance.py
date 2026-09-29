@@ -317,7 +317,105 @@ def _ohlc_spread_op(frame: Any) -> Any:
     )
 
 
+def _liquidity_probe(frame: pl.DataFrame) -> pl.DataFrame:
+    """Returns, market returns and volumes built causally from ``x``, ``z``.
+
+    ``r`` is the within-entity change of ``x`` (the probe's repeated values
+    make exact zeros), ``m = z / 100`` a market return, ``dv`` a positive
+    dollar volume and ``flow`` a signed order flow.
+    """
+    return frame.with_columns(
+        (pl.col(VALUE).diff().over(ENTITY) / 100.0).alias("r"),
+        (pl.col(AUX) / 100.0).alias("m"),
+        (1e6 * (pl.col(AUX) / 4.0).exp()).alias("dv"),
+        (pl.col(AUX) * 1e3).alias("flow"),
+    )
+
+
+def _price_impact_op(frame: Any) -> Any:
+    out = _liquidity_probe(frame)
+    out = _econ_features.price_impact(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        dollar_volume="dv",
+        window=6,
+        min_periods=4,
+    )
+    return _econ_features.price_impact(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        signed_volume="flow",
+        window=6,
+        intercept=False,
+        alias="lambda_origin",
+    )
+
+
+def _ps_gamma_op(frame: Any) -> Any:
+    return _econ_features.pastor_stambaugh_gamma(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        market_returns="m",
+        dollar_volume="dv",
+        window=6,
+        min_periods=4,
+    )
+
+
+def _zero_return_share_op(frame: Any) -> Any:
+    return _econ_features.zero_return_share(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        volume="dv",
+        window=5,
+        min_periods=3,
+    )
+
+
+def _fht_spread_op(frame: Any) -> Any:
+    return _econ_features.fht_spread(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        window=5,
+        min_periods=3,
+    )
+
+
 _FRAME_OPS["range_volatility"] = _range_volatility_op
+_FRAME_OPS["price_impact"] = _price_impact_op
+_FRAME_OPS["pastor_stambaugh_gamma"] = _ps_gamma_op
+_FRAME_OPS["zero_return_share"] = _zero_return_share_op
+_FRAME_OPS["fht_spread"] = _fht_spread_op
+_FRAME_OP_RENDERINGS.update(
+    {
+        "price_impact": (
+            "panelary.econ.features.price_impact(<liquidity probe>, window=6) with "
+            "dollar_volume, and with signed_volume and intercept=False"
+        ),
+        "pastor_stambaugh_gamma": (
+            "panelary.econ.features.pastor_stambaugh_gamma(<liquidity probe>, "
+            "window=6, min_periods=4)"
+        ),
+        "zero_return_share": (
+            "panelary.econ.features.zero_return_share(<liquidity probe>, "
+            "volume='dv', window=5, min_periods=3)"
+        ),
+        "fht_spread": (
+            "panelary.econ.features.fht_spread(<liquidity probe>, window=5, "
+            "min_periods=3)"
+        ),
+    }
+)
 _FRAME_OPS["ohlc_spread"] = _ohlc_spread_op
 _FRAME_OP_RENDERINGS["ohlc_spread"] = (
     "panelary.econ.features.ohlc_spread(<OHLC probe>, method=<each of 3>, "

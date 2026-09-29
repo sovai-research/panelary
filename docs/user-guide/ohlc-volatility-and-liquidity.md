@@ -227,6 +227,53 @@ exact-arithmetic value (zero variance) rather than the reference's
 floating-point-residue weighting. The first 2000 rows of both test files are
 vendored under `tests/data/bidask/` with the MIT notice and stored reference values.
 
+## Low-frequency liquidity proxies
+
+Four more trailing proxies sit beside the existing Amihud, Roll, Amivest and
+turnover measures in `econ.features`:
+
+```python
+from panelary.econ.features import (
+    price_impact, pastor_stambaugh_gamma, zero_return_share, fht_spread,
+)
+
+df = price_impact(df, entity="ticker", time="date", returns="ret", dollar_volume="dv")
+df = pastor_stambaugh_gamma(
+    df, entity="ticker", time="date", returns="ret", market_returns="mkt",
+    dollar_volume="dv",
+)
+df = zero_return_share(df, entity="ticker", time="date", returns="ret", volume="vol")
+df = fht_spread(df, entity="ticker", time="date", returns="ret")
+```
+
+| Function | What it estimates | Output |
+| --- | --- | --- |
+| `price_impact` | slope of returns on signed √dollar-volume (a Kyle-λ proxy), or on a `signed_volume` you supply | `price_impact_{w}` |
+| `pastor_stambaugh_gamma` | Pástor–Stambaugh γ: the reversal coefficient on lagged signed dollar volume, from `r^e_s = θ + φ r_{s−1} + γ sign(r^e_{s−1}) v_{s−1}` | `ps_gamma_{w}` |
+| `zero_return_share` | share of zero-return days (`Zeros`), and of zero-return days with positive volume (`Zeros2`) | `zeros_{w}`, `zeros2_{w}` |
+| `fht_spread` | Fong–Holden–Trzcinka effective spread `2σ·Φ⁻¹((1 + z)/2)` | `fht_{w}` |
+
+!!! note "What `price_impact` is, honestly"
+    With `sign(r)` standing in for the order-flow sign, `Cov(r, x) = E[|r|·√DV] > 0`
+    mechanically, so the slope measures price-impact *magnitude*, much like Amihud's
+    ratio — which Goyenko, Holden & Trzcinka (2009) found to be the best
+    low-frequency price-impact proxy. Pass a genuine `signed_volume` (e.g. buy minus
+    sell volume) to estimate a Kyle-style λ.
+
+The two regression proxies anchor every variable at the entity's **first valid
+value** before forming second moments. That constant is causal (every row with a
+value comes after it) and removes the cancellation of `E[xy] − E[x]E[y]`, which
+loses about four digits at a mean/sd of 10⁶ (5.6e-4 relative error, measured;
+6e-16 anchored). Both are verified window by window against `np.linalg.lstsq`,
+including on such an input. `Zeros2` exists because a stale vendor fill — the
+close carried forward on a no-trade day, volume 0 — is a zero return that says
+nothing about transaction costs. FHT's inverse normal CDF is a lookup: the zero
+share is a ratio of two integer counts, so `Φ⁻¹` is evaluated once per possible
+`(count, zeros)` pair (`O(w²)` scalar calls per call) and gathered per row.
+
+Pástor & Stambaugh note that individual-stock γ is very noisy; their liquidity
+factor averages it across stocks.
+
 ## `.panel.rolling_vol` and the `rs_vol` rename
 
 `.panel.rs_vol` was documented as "Rogers–Satchell-style volatility" but has always
@@ -266,6 +313,10 @@ with other jobs — load average ≈ 14 — so treat these as upper bounds):
 | EDGE, w = 21, unbatched | 7.9 s; peak RSS 11.9 GB | — |
 | Corwin–Schultz, w = 21 | 2.1 s | ≤ 3 s (target) |
 | Abdi–Ranaldo, w = 21 | 1.2–1.5 s | ≤ 3 s (target) |
+| `price_impact`, w = 63 | 0.9 s | ≤ 3 s (target) |
+| `pastor_stambaugh_gamma`, w = 21 | 1.1 s | ≤ 5 s (target) |
+| `zero_return_share` (with `Zeros2`), w = 21 | 0.5 s | — |
+| `fht_spread`, w = 21 | 0.5 s | ≤ 3 s (target) |
 
 Each call sorts, validates and logs its own copy of the prices, so three separate
 range calls cost more than the plan's single-pass prototype (1.21 s); the budget's 2×
@@ -283,4 +334,8 @@ Rogers & Satchell (1991), *Ann. Appl. Probab.* 1(4); Yang & Zhang (2000),
 *J. Business* 73(3); Broadie, Glasserman & Kou (1997), *Math. Finance* 7(4);
 Asmussen, Glynn & Pitman (1995), *Ann. Appl. Probab.* 5(4); Ardia, Guidotti &
 Kroencke (2024), *J. Financial Economics* 161, 103916; Corwin & Schultz (2012),
-*J. Finance* 67(2); Abdi & Ranaldo (2017), *Rev. Financial Studies* 30(12).
+*J. Finance* 67(2); Abdi & Ranaldo (2017), *Rev. Financial Studies* 30(12);
+Kyle (1985), *Econometrica*; Hasbrouck (2009), *J. Finance* 64(3); Pástor &
+Stambaugh (2003), *J. Political Economy* 111(3); Lesmond, Ogden & Trzcinka (1999),
+*Rev. Financial Studies* 12(5); Goyenko, Holden & Trzcinka (2009), *J. Financial
+Economics* 92(2); Fong, Holden & Trzcinka (2017), *Rev. Finance* 21(4).

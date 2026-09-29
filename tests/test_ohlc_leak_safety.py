@@ -17,7 +17,14 @@ import numpy as np
 import polars as pl
 import pytest
 
-from panelary.econ.features import ohlc_spread, range_volatility
+from panelary.econ.features import (
+    fht_spread,
+    ohlc_spread,
+    pastor_stambaugh_gamma,
+    price_impact,
+    range_volatility,
+    zero_return_share,
+)
 from panelary.testing import assert_no_lookahead, assert_prefix_invariant
 
 ENTITY, TIME = "e", "t"
@@ -279,6 +286,108 @@ def test_trap7_spreads_never_fill_a_bad_future_bar_backwards() -> None:
         col = f"spread_{method}_5"
         upto = pl.col(TIME) <= 30
         assert a.filter(upto)[col].to_list() == b.filter(upto)[col].to_list()
+
+
+# --------------------------------------------------------------------------- #
+# Low-frequency liquidity proxies
+# --------------------------------------------------------------------------- #
+def liquidity_panel() -> pl.DataFrame:
+    """Returns (rounded, so zeros occur), market returns, volume, signed flow."""
+    rng = np.random.default_rng(3)
+    rows = []
+    for e, n in _LENGTHS.items():
+        for t in range(n):
+            m = rng.normal(0, 0.01)
+            r = round(0.7 * m + rng.normal(0, 0.012), 2)
+            dv = math.exp(rng.normal(13, 1))
+            rows.append((e, t, r, m, dv, 5e5 + rng.normal(0, 1)))
+    df = pl.DataFrame(rows, schema=[ENTITY, TIME, "r", "m", "dv", "flow"], orient="row")
+    # a gap and a non-finite value, mid-entity (NaN, not inf: the verifiers
+    # compare the input columns too, and inf - inf is NaN)
+    return df.with_columns(
+        pl.when((pl.col(ENTITY) == "b") & (pl.col(TIME) == 9))
+        .then(None)
+        .otherwise(pl.col("r"))
+        .alias("r"),
+        pl.when((pl.col(ENTITY) == "c") & (pl.col(TIME) == 5))
+        .then(float("nan"))
+        .otherwise(pl.col("dv"))
+        .alias("dv"),
+    )
+
+
+_PROXIES = {
+    "price_impact": lambda df, mp: price_impact(
+        df,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        dollar_volume="dv",
+        window=8,
+        min_periods=mp,
+    ),
+    "price_impact_signed": lambda df, mp: price_impact(
+        df,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        signed_volume="flow",
+        window=8,
+        min_periods=mp,
+    ),
+    "ps_gamma": lambda df, mp: pastor_stambaugh_gamma(
+        df,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        market_returns="m",
+        dollar_volume="dv",
+        window=8,
+        min_periods=mp,
+    ),
+    "zeros": lambda df, mp: zero_return_share(
+        df,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        volume="dv",
+        window=8,
+        min_periods=mp,
+    ),
+    "fht": lambda df, mp: fht_spread(
+        df, entity=ENTITY, time=TIME, returns="r", window=8, min_periods=mp
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_PROXIES))
+@pytest.mark.parametrize("min_periods", [None, 5])
+def test_liquidity_proxies_are_causal_and_prefix_invariant(name, min_periods) -> None:
+    fn = _PROXIES[name]
+    _both(lambda df: fn(df, min_periods), liquidity_panel())
+
+
+def test_first_value_anchor_is_not_a_look_ahead() -> None:
+    """The anchor is the entity's FIRST valid value, i.e. from the past.
+
+    A leaky variant anchoring at the LAST value (the full-sample mean would do
+    the same) is caught by the prefix check, even though a covariance does
+    not depend on the anchor in exact arithmetic: it moves in the last bits.
+    """
+    panel = liquidity_panel().with_columns((pl.col("flow") * 1e3).alias("flow"))
+
+    def leaky(df):
+        anchored = df.sort(ENTITY, TIME).with_columns(
+            (pl.col("flow") - pl.col("flow").drop_nulls().last().over(ENTITY)).alias(
+                "x"
+            )
+        )
+        return anchored.with_columns(
+            (pl.col("x") * pl.col("x")).rolling_mean(8).over(ENTITY).alias("m2")
+        )
+
+    with pytest.raises(AssertionError):
+        assert_prefix_invariant(leaky, panel, entity=ENTITY, time=TIME, tol=0.0)
 
 
 # --------------------------------------------------------------------------- #
