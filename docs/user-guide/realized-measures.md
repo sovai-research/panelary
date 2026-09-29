@@ -219,16 +219,16 @@ last-value forecast and 12% below a 22-day mean.
 
 ## Performance
 
-Measured 2026-09-29 on an Apple M5 Pro (15 threads, polars 1.44.2), with
-eight other jobs sharing the machine. Scripts are in
+Measured 2026-09-29 on an Apple M5 Pro (15 threads, polars 1.44.2), best of
+two, on a machine shared with other jobs (load average 16–18). Scripts are in
 `benchmarks/ohlc_vol/bench_intraday.py`.
 
 | Workload | Measured | Budget |
 |---|---|---|
-| core battery, 19.7M one-minute rows | 0.96 s (≈4.8 s at 98M) | 8 s at 98M |
-| full battery incl. `rk` (30 lags), `tsrv`, `pav`, 19.7M rows | 5.6 s (≈28 s at 98M) | 40 s at 98M |
-| `rough_hurst`, 10 lags, 25M daily rows, constant noise | 4.0 s | 4 s (target) |
-| `rough_hurst`, 10 lags, 25M daily rows, noise column | 7.0 s | none |
+| core battery, 19.7M one-minute rows | 0.77 s (≈3.8 s at 98M) | 8 s at 98M |
+| full battery incl. `rk` (30 lags), `tsrv`, `pav`, 19.7M rows | 4.0 s (≈20 s at 98M) | 40 s at 98M |
+| `rough_hurst`, 10 lags, 25M daily rows, constant noise | 2.2 s | 4 s (target) |
+| `rough_hurst`, 10 lags, 25M daily rows, noise column | 4.3 s | 4 s (target) |
 
 ## References
 

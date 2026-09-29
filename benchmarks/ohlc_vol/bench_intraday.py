@@ -13,18 +13,20 @@ budgets scale linearly (98M = 500 entities). Usage::
 
     python benchmarks/ohlc_vol/bench_intraday.py [entities] [days] [daily_entities]
 
-Measured 2026-09-29 (Apple M5 Pro, 15 threads, polars 1.44.2, with eight other
-jobs sharing the machine, load average 30-45), best of two:
+Measured 2026-09-29 (Apple M5 Pro, 15 threads, polars 1.44.2), best of two,
+on a machine shared with eight other jobs (load average 16-18; at 40-65 the
+same runs took 1.5-2x longer):
 
-=========================================  ========  ===================
+=========================================  ========  ====================
 workload                                   19.7M     98M (x5, linear)
-=========================================  ========  ===================
-core battery (12 measures)                 0.96 s    ~4.8 s (budget 8)
-full battery (+ rk, tsrv, pav, medrq, C/J)  5.6 s    ~28 s (budget 40)
-=========================================  ========  ===================
+=========================================  ========  ====================
+core battery (12 measures)                 0.77 s    ~3.8 s (budget 8)
+full battery (+ rk, tsrv, pav, medrq, C/J)  3.99 s   ~20 s (budget 40)
+=========================================  ========  ====================
 
-``rough_hurst`` (10 lags, W = 500): 5M rows 0.79 s (constant noise) / 1.14 s
-(noise column); 25M rows 4.0 s / 7.0 s, peak RSS 8.4 / 10.6 GB.
+``rough_hurst`` (10 lags, W = 500), 25M rows (5000 x 5000): 2.15 s with a
+constant noise variance, 4.34 s with a per-day noise column (target 4 s);
+peak RSS 9.1 / 11.5 GB.
 """
 
 from __future__ import annotations
