@@ -143,7 +143,7 @@ class Turbulence(PanelTransformer):
     returns : str
     window : int, default 252
     method : str, default "qis"
-    refit, lag, space, min_coverage, min_entities, pct_window
+    refit, lag, space, min_coverage, min_entities, group, pct_window
         As for :func:`panelary.covariance.turbulence`.
     **options
         Estimator options.
@@ -162,7 +162,8 @@ class Turbulence(PanelTransformer):
         lag: int = 1,
         space: str = "correlation",
         min_coverage: float = 0.95,
-        min_entities: int = 2,
+        min_entities: int | None = None,
+        group: str | None = None,
         pct_window: int = 252,
         entity: str | None = None,
         time: str | None = None,
@@ -179,14 +180,16 @@ class Turbulence(PanelTransformer):
         self.space = space
         self.min_coverage = min_coverage
         self.min_entities = min_entities
+        self.group = group
         self.pct_window = pct_window
         self.options = dict(options)
 
     def _fit(self, panel: PanelFrame) -> None:
-        if self.returns not in panel.columns:
+        need = [self.returns] + ([self.group] if self.group else [])
+        missing = [c for c in need if c not in panel.columns]
+        if missing:
             raise ValueError(
-                f"column {self.returns!r} not found in panel. Available: "
-                f"{panel.columns}."
+                f"column(s) {missing} not found in panel. Available: {panel.columns}."
             )
 
     def _transform(self, panel: PanelFrame) -> PanelFrame:
@@ -200,6 +203,7 @@ class Turbulence(PanelTransformer):
             space=self.space,
             min_coverage=self.min_coverage,
             min_entities=self.min_entities,
+            group=self.group,
             pct_window=self.pct_window,
             broadcast=True,
             **self.options,

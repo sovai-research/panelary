@@ -211,3 +211,58 @@ def test_public_surface_is_lazy_and_complete() -> None:
         "assert registry.get('market_state').namespace == 'covariance'"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+# --------------------------------------------------------------------------- #
+# group variants
+# --------------------------------------------------------------------------- #
+def _sectored() -> pl.DataFrame:
+    return DF.with_columns(
+        (pl.col("entity").str.slice(-1).cast(pl.Int64) % 2)
+        .cast(pl.String)
+        .alias("sector")
+    )
+
+
+def test_group_turbulence_matches_each_group_alone() -> None:
+    df = _sectored()
+    kw = {"returns": "value", "window": W, "min_coverage": COV, "refit": "1w"}
+    grouped = turbulence(
+        df, group="sector", min_entities=4, entity="entity", time="time", **kw
+    )
+    assert set(grouped.get_column("sector").unique()) == {"0", "1"}
+    for sec in ("0", "1"):
+        alone = turbulence(
+            df.filter(pl.col("sector") == sec),
+            min_entities=4,
+            entity="entity",
+            time="time",
+            **kw,
+        ).drop_nulls("turbulence")
+        got = grouped.filter(pl.col("sector") == sec).drop("sector")
+        got = got.filter(pl.col("time").is_in(alone["time"].implode()))
+        assert got.select("time", "turbulence", "n_scored").equals(
+            alone.select("time", "turbulence", "n_scored")
+        )
+
+
+def test_group_market_loading_matches_each_group_alone() -> None:
+    from panelary.covariance._state import market_loading
+
+    df = _sectored()
+    grouped = market_loading(
+        df, returns="value", window=W, min_coverage=COV, group="sector",
+        min_entities=4, entity="entity", time="time",
+    )  # fmt: skip
+    for sec in ("0", "1"):
+        sub = df.filter(pl.col("sector") == sec)
+        alone = market_loading(
+            sub, returns="value", window=W, min_coverage=COV, min_entities=4,
+            entity="entity", time="time",
+        )  # fmt: skip
+        got = sub.select("entity", "time").join(
+            grouped, on=["entity", "time"], how="left"
+        )
+        assert got.get_column("market_loading").equals(
+            alone.get_column("market_loading")
+        )

@@ -156,3 +156,32 @@ def test_every_date_is_covered_by_the_output() -> None:
     assert out.get_column("time").to_list() == TIMES
     grid = out.filter(pl.col("time") == pl.col("asof_date"))
     assert grid.height == len(range(0, len(TIMES), 5))
+
+
+@pytest.mark.parametrize("refit", [5, "1w", "1mo"])
+@pytest.mark.parametrize("group", [None, "sector"])
+def test_turbulence_is_prefix_invariant_and_causal(refit, group: str | None) -> None:
+    from panelary.covariance._turbulence import turbulence
+
+    def op(frame):
+        return turbulence(
+            frame, returns="value", window=W, min_coverage=COV, refit=refit,
+            group=group, min_entities=3, pct_window=10, broadcast=True,
+        )  # fmt: skip
+
+    assert op(PANEL).get_column("turbulence").drop_nulls().len() > 500
+    for cut in CUTS:
+        assert_prefix_invariant(op, PANEL, tol=0.0, cut=cut)
+        assert_no_lookahead(op, PANEL, tol=0.0, cut=cut)
+
+
+def test_group_market_loading_is_prefix_invariant() -> None:
+    def op(frame):
+        return market_loading(
+            frame, returns="value", window=W, min_coverage=COV, group="sector",
+            min_entities=3, schedule="1w",
+        )  # fmt: skip
+
+    for cut in CUTS:
+        assert_prefix_invariant(op, PANEL, tol=0.0, cut=cut)
+        assert_no_lookahead(op, PANEL, tol=0.0, cut=cut)

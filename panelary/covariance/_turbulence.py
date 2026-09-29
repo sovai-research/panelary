@@ -30,12 +30,13 @@ from numpy.typing import NDArray
 
 from panelary.core._schedule import Schedule, as_schedule
 from panelary.covariance._estimate import METHODS, resolve_method
-from panelary.covariance._state import _broadcast, _validate_common
+from panelary.covariance._state import _broadcast, _units, _validate_common
 from panelary.covariance._types import CovEstimate
 from panelary.covariance._window import (
     DEFAULT_MIN_ENTITIES,
     PanelMatrix,
     panel_matrix,
+    universe,
     window_at,
 )
 
@@ -100,7 +101,8 @@ def turbulence(
     lag: int = 1,
     space: str = "correlation",
     min_coverage: float = 0.95,
-    min_entities: int = DEFAULT_MIN_ENTITIES,
+    min_entities: int | None = None,
+    group: str | None = None,
     pct_window: int = 252,
     broadcast: bool = False,
     entity: str | None = None,
@@ -127,8 +129,14 @@ def turbulence(
         The estimate used at ``t`` is the one from the latest refit date
         ``<= t - lag``. Must be >= 1: ``lag=0`` would put ``r_t`` inside its
         own covariance (trap T2).
-    space, min_coverage, min_entities
+    space, min_coverage
         As for :func:`rolling`.
+    min_entities : int, optional
+        Smallest universe (or group) scored: default 2, or 10 with ``group``.
+    group : str, optional
+        Group column: each group (by its members' date-``s`` label at the
+        refit) gets its own estimate and turbulence series, keyed
+        ``(time, group)``.
     pct_window : int, default 252
         Window of the trailing percentile ``turbulence_pct``.
     broadcast : bool, default False
@@ -139,9 +147,9 @@ def turbulence(
     Returns
     -------
     polars.DataFrame
-        ``time, turbulence, turbulence_pct, n_scored, cond, shrinkage,
-        asof_date`` -- ``asof_date`` is the refit date whose estimate scored
-        the row.
+        ``time[, group], turbulence, turbulence_pct, n_scored, cond,
+        shrinkage, asof_date`` -- ``asof_date`` is the refit date whose
+        estimate scored the row.
     """
     if isinstance(lag, bool) or int(lag) < 1:
         raise ValueError(
@@ -152,63 +160,104 @@ def turbulence(
     window = int(window)
     lag = int(lag)
     name = resolve_method(method)
-    pm = panel_matrix(panel, returns, entity=entity, time=time)
+    if min_entities is None:
+        min_entities = 10 if group is not None else DEFAULT_MIN_ENTITIES
+    pm = panel_matrix(panel, returns, entity=entity, time=time, group=group)
     sched = _default_refit(pm) if refit is None else as_schedule(refit)
     asof = sched.asof_positions(pm.times)
     T = pm.n_times
-    d = np.full(T, np.nan)
-    n_scored = np.zeros(T, dtype=np.int64)
-    cond = np.full(T, np.nan)
-    shrink = np.full(T, np.nan)
-    src = np.full(T, -1, dtype=np.int64)
+    results: dict[int, dict[str, NDArray[Any]]] = {}
+
+    def arrays(code: int) -> dict[str, NDArray[Any]]:
+        if code not in results:
+            results[code] = {
+                "d": np.full(T, np.nan),
+                "n": np.zeros(T, dtype=np.int64),
+                "cond": np.full(T, np.nan),
+                "shrink": np.full(T, np.nan),
+                "src": np.full(T, -1, dtype=np.int64),
+            }
+        return results[code]
+
+    if group is None:
+        arrays(-1)
     cur_s = -2
-    est: CovEstimate | None = None
-    idx = np.empty(0, dtype=np.intp)
-    est_cond = math.nan
-    est_shrink = math.nan
+    fitted: list[tuple[int, CovEstimate, NDArray[np.intp], float, float]] = []
     for t in range(lag, T):
         s = int(asof[t - lag])
         if s < 0:
             continue
         if s != cur_s:
             cur_s = s
-            ws, idx = window_at(
-                pm, s, window=window, min_coverage=min_coverage, space=space,
-                min_entities=min_entities,
-            )  # fmt: skip
-            est = None if ws is None else METHODS[name](ws, **options)
-            if est is not None:
-                est_cond = est.cond()
-                est_shrink = math.nan if est.shrinkage is None else est.shrinkage
-        if est is None:
-            continue
-        assert est.location is not None
-        x = pm.R[t, idx] - est.location
-        q, n_obs = inv_quad_observed(est, x)
-        if n_obs < min_entities:
-            continue
-        d[t] = q / n_obs
-        n_scored[t] = n_obs
-        cond[t] = est_cond
-        shrink[t] = est_shrink
-        src[t] = s
-    pct = _trailing_percentile(d, int(pct_window), min(int(pct_window), 21))
+            fitted = []
+            idx_all = universe(pm, s, window, min_coverage)
+            for code, members in _units(pm, s, idx_all):
+                ws, idx = window_at(
+                    pm, s, window=window, min_coverage=min_coverage, space=space,
+                    idx=members, min_entities=min_entities,
+                )  # fmt: skip
+                if ws is None:
+                    continue
+                est = METHODS[name](ws, **options)
+                sh = math.nan if est.shrinkage is None else float(est.shrinkage)
+                fitted.append((-1 if code is None else code, est, idx, est.cond(), sh))
+        for code, est, idx, est_cond, est_shrink in fitted:
+            assert est.location is not None
+            x = pm.R[t, idx] - est.location
+            q, n_obs = inv_quad_observed(est, x)
+            if n_obs < min_entities:
+                continue
+            a = arrays(code)
+            a["d"][t] = q / n_obs
+            a["n"][t] = n_obs
+            a["cond"][t] = est_cond
+            a["shrink"][t] = est_shrink
+            a["src"][t] = s
     tcol = pm.time_col
-    out = pl.DataFrame(
-        {
-            tcol: pm.times,
-            "turbulence": d,
-            "turbulence_pct": pct,
-            "n_scored": n_scored,
-            "cond": cond,
-            "shrinkage": shrink,
-            "__src__": src,
-        }
-    )
+    frames = []
+    for code in sorted(results):
+        a = results[code]
+        pct = _trailing_percentile(a["d"], int(pct_window), min(int(pct_window), 21))
+        f = pl.DataFrame(
+            {
+                tcol: pm.times,
+                "turbulence": a["d"],
+                "turbulence_pct": pct,
+                "n_scored": a["n"],
+                "cond": a["cond"],
+                "shrinkage": a["shrink"],
+                "__src__": a["src"],
+            }
+        )
+        if group is not None:
+            f = f.filter(pl.col("__src__") >= 0).with_columns(
+                pl.lit(pm.group_values[code]).alias(group)
+            )
+        frames.append(f)
+    if frames:
+        out = pl.concat(frames, how="vertical")
+    else:  # a grouped panel with no group large enough anywhere
+        out = pl.DataFrame(
+            {
+                tcol: pm.times.clear(),
+                "turbulence": [],
+                "turbulence_pct": [],
+                "n_scored": [],
+                "cond": [],
+                "shrinkage": [],
+                "__src__": [],
+            },
+            schema_overrides={"n_scored": pl.Int64, "__src__": pl.Int64},
+        )
+        if group is not None:
+            out = out.with_columns(pl.lit(None).alias(group))
+    src = out.get_column("__src__").to_numpy()
     out = (
         out.with_columns(
             pm.times.gather(np.clip(src, 0, None)).alias("asof_date"),
-            pl.col("turbulence", "turbulence_pct", "cond", "shrinkage").fill_nan(None),
+            pl.col("turbulence", "turbulence_pct", "cond", "shrinkage")
+            .cast(pl.Float64)
+            .fill_nan(None),
         )
         .with_columns(
             pl.when(pl.col("__src__") >= 0).then(pl.col("asof_date")).otherwise(None),
@@ -219,6 +268,16 @@ def turbulence(
         )
         .drop("__src__")
     )
+    keys = [tcol] if group is None else [tcol, group]
+    out = out.select(
+        *keys,
+        "turbulence",
+        "turbulence_pct",
+        "n_scored",
+        "cond",
+        "shrinkage",
+        "asof_date",
+    ).sort(keys)
     if broadcast:
-        return _broadcast(panel, out, entity=entity, time=time, on=[tcol])
+        return _broadcast(panel, out, entity=entity, time=time, on=keys)
     return out

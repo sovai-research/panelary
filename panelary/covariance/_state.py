@@ -508,7 +508,8 @@ def market_loading(
     stride: int | None = 1,
     schedule: Schedule | int | str | None = None,
     min_coverage: float = 0.95,
-    min_entities: int = 2,
+    min_entities: int | None = None,
+    group: str | None = None,
     space: str = "correlation",
     min_gap: float = 1.05,
     name: str = "market_loading",
@@ -520,7 +521,9 @@ def market_loading(
     ``v_1i`` of the window's top eigenvector, oriented so that the loadings
     sum to a positive number ("market up" is positive; trap T13's sign
     guard). Null when the entity is outside the as-of universe or when
-    ``lambda_1 / lambda_2 < min_gap``.
+    ``lambda_1 / lambda_2 < min_gap``. With ``group``, each entity's loading
+    is on the market mode of its date-``s`` group (groups with at least
+    ``min_entities`` members; default 2, or 10 with ``group``).
 
     Returns
     -------
@@ -530,19 +533,24 @@ def market_loading(
     _validate_common(window, min_coverage, space)
     window = int(window)
     sched = _resolve_schedule(stride, schedule)
-    pm = panel_matrix(panel, returns, entity=entity, time=time)
+    if min_entities is None:
+        min_entities = 10 if group is not None else 2
+    pm = panel_matrix(panel, returns, entity=entity, time=time, group=group)
     T, N = pm.R.shape
     L = np.full((T, N), np.nan)
     grid = sched.positions(pm.times)
     load_at: dict[int, NDArray[np.float64]] = {}
     for s in grid:
         s = int(s)
-        ws, idx = window_at(
-            pm, s, window=window, min_coverage=min_coverage, space=space,
-            min_entities=min_entities,
-        )  # fmt: skip
         row = np.full(N, np.nan)
-        if ws is not None:
+        idx_all = universe(pm, s, window, min_coverage)
+        for _code, members in _units(pm, s, idx_all):
+            ws, idx = window_at(
+                pm, s, window=window, min_coverage=min_coverage, space=space,
+                idx=members, min_entities=min_entities,
+            )  # fmt: skip
+            if ws is None:
+                continue
             lam = ws.spectrum().values
             gap = float(lam[0] / lam[1]) if lam.size > 1 and lam[1] > 0 else math.inf
             if gap >= min_gap:
