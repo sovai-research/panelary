@@ -64,6 +64,7 @@ def forward_return(
     horizon: int = 1,
     out: str = "fwd_ret",
     allow_gaps: bool = False,
+    end_time: str | None = None,
 ) -> FrameT:
     """Attach the leak-safe forward return over ``(t, t+horizon]`` to each row.
 
@@ -95,11 +96,18 @@ def forward_return(
         If ``False`` (default), raise when the per-entity time grid is irregular
         (a shift could jump a gap and leak). Set ``True`` only when the grid is
         deliberately irregular and you accept the risk.
+    end_time : str | None, keyword-only, default None
+        If given, also write the time ``horizon`` rows ahead -- the label end
+        time ``t1`` that purged cross-validation consumes -- under this name,
+        in the time column's dtype (null where ``out`` is null). It comes
+        from the same backward shift, so the library keeps one audited
+        negative-shift site.
 
     Returns
     -------
     LazyFrame | DataFrame
-        The input frame, sorted by ``[entity, time]``, with the ``out`` column.
+        The input frame, sorted by ``[entity, time]``, with the ``out`` column
+        (and ``end_time`` when requested).
     """
     if (price is None) == (ret is None):
         raise ValueError(
@@ -119,4 +127,7 @@ def forward_return(
         fwd = pl.col(ret).shift(-horizon).over(entity)
     else:
         fwd = (pl.col(price).shift(-horizon) / pl.col(price) - 1.0).over(entity)
-    return ordered.with_columns(fwd.alias(out))
+    if end_time is None:
+        return ordered.with_columns(fwd.alias(out))
+    end = pl.col(time).shift(-horizon).over(entity)
+    return ordered.with_columns(fwd.alias(out), end.alias(end_time))

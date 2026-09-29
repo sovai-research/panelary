@@ -141,6 +141,35 @@ you will get slower, approximate results with no error.
 
 ---
 
+## Labels and purged CV: changes after 0.5.0
+
+Three label/purge fixes change what you see. Folds from `PurgedKFold` and
+`CombinatorialPurgedCV` are **byte-identical** to 0.5.0; only the speed of the
+`t1=` purge changed.
+
+- **`label.fixed_horizon` raises on an irregular time grid.** It now computes
+  its forward return through `factor.forward_return`, the library's single
+  audited negative-shift site, and inherits its gap guard: if the per-entity
+  time step is not constant (a missing day, or weekends on a business-day
+  `Date` panel) it raises `ValueError` instead of silently letting a
+  `horizon`-row label span different amounts of time. Outputs on a regular grid
+  are byte-identical. To keep the 0.5.0 behaviour on an irregular grid, pass
+  `allow_gaps=True`; `t1` still records each label's true end time, which is
+  what the purge uses.
+- **`label.triple_barrier` gains a `censored` column** (Boolean, appended after
+  `t1`). It is `True` for rows whose vertical barrier runs past the entity's
+  last row without a touch: 0.5.0 reported those as resolved "no-trend" labels
+  (the last row as `label=0, t1=t`), and they change as data arrives. `label`,
+  `ret` and `t1` are unchanged; filter with `~pl.col("censored")` before
+  training. If you select columns by position, or feed every non-key column to
+  a model, account for the new column.
+- **A null `t1` at a test time now warns.** The purge cannot test overlap
+  against an unknown label span, so a training label overlapping it is kept
+  (as in 0.5.0). When a surviving training time is at risk, the splitters emit
+  a `UserWarning`; drop unresolved labels before splitting to silence it.
+
+---
+
 ## Why no shim?
 
 A forwarding `polars_features` package that re-exported `panelary` would be cheap

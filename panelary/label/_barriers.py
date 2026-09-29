@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from panelary.factor._align import forward_return
+
 if TYPE_CHECKING:
     from panelary._internal._type_aliases import PolarsFrame
 
@@ -84,19 +86,24 @@ def _triple_barrier_entity(
     sl: float,
     max_holding: int,
     vol_lookback: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    sigma: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute triple-barrier outcomes for one entity's time-ordered path.
 
-    Returns the ``(label, ret, t1_index)`` arrays, where ``t1_index[i]`` is the
-    positional index (into this entity's rows) at which observation ``i`` is
-    resolved.
+    Returns the ``(label, ret, t1_index, censored)`` arrays, where
+    ``t1_index[i]`` is the positional index (into this entity's rows) at which
+    observation ``i`` is resolved and ``censored[i]`` is True when no
+    horizontal barrier was touched *and* the vertical barrier
+    ``i + max_holding`` lies beyond the entity's last row (the label was never
+    resolved). ``sigma`` overrides the built-in trailing standard deviation.
     """
     n = prices.shape[0]
-    returns = np.empty(n, dtype=np.float64)
-    returns[0] = np.nan
-    if n > 1:
-        returns[1:] = prices[1:] / prices[:-1] - 1.0
-    sigma = _trailing_std(returns, vol_lookback)
+    if sigma is None:
+        returns = np.empty(n, dtype=np.float64)
+        returns[0] = np.nan
+        if n > 1:
+            returns[1:] = prices[1:] / prices[:-1] - 1.0
+        sigma = _trailing_std(returns, vol_lookback)
 
     label = np.zeros(n, dtype=np.int64)
     ret_out = np.zeros(n, dtype=np.float64)
@@ -123,7 +130,9 @@ def _triple_barrier_entity(
         ret_out[i] = prices[touch] / prices[i] - 1.0
         label[i] = lab
 
-    return label, ret_out, t1_idx
+    rows = np.arange(n, dtype=np.int64)
+    censored = (label == 0) & (rows + max_holding > n - 1)
+    return label, ret_out, t1_idx, censored
 
 
 def triple_barrier(
@@ -136,6 +145,7 @@ def triple_barrier(
     sl: float = 1.0,
     max_holding: int,
     vol_lookback: int = 20,
+    vol: str | None = None,
 ) -> pl.DataFrame:
     """Triple-barrier labels (AFML Ch. 3).
 
@@ -167,12 +177,20 @@ def triple_barrier(
     max_holding : int
         Vertical-barrier horizon, in number of forward steps (rows) per entity.
     vol_lookback : int, default 20
-        Trailing look-back (in rows) for the volatility estimate.
+        Trailing look-back (in rows) for the built-in volatility estimate.
+        Ignored when ``vol`` is given.
+    vol : str, optional
+        Column holding a **causal** (trailing) volatility estimate, in return
+        units, to scale the barriers instead of the built-in trailing standard
+        deviation -- e.g. a range-based estimator. It must only use data up to
+        and including each row; a centred or full-sample estimate leaks the
+        future into the barrier widths. Null / NaN / non-positive values
+        disable the horizontal barriers on that row, as a warm-up does.
 
     Returns
     -------
     polars.DataFrame
-        The input rows (sorted by ``[entity, time]``) with three columns added:
+        The input rows (sorted by ``[entity, time]``) with four columns added:
 
         ``label`` : Int64
             ``+1`` (profit-take), ``-1`` (stop-loss), or ``0`` (vertical).
@@ -181,6 +199,15 @@ def triple_barrier(
         ``t1`` : same dtype as ``time``
             Timestamp at which the label is resolved. Always ``t <= t1`` and
             within ``max_holding`` steps of ``t``.
+        ``censored`` : Boolean
+            ``True`` when no horizontal barrier was touched **and** the
+            vertical barrier ``t + max_holding`` steps lies beyond the entity's
+            last row. Such a row's ``label = 0`` / ``t1`` describe a *truncated*
+            horizon (the last row gets ``label = 0, t1 = t``): the data cannot
+            support the label yet, and it changes as data arrives. ``label``,
+            ``ret`` and ``t1`` are unchanged for compatibility; drop censored
+            rows before training (the :mod:`panelary.weights` span table and
+            ``FoldWeights`` exclude them by default).
     """
     if max_holding < 1:
         raise ValueError("max_holding must be a positive integer")
@@ -192,21 +219,29 @@ def triple_barrier(
     labels: list[np.ndarray] = []
     rets: list[np.ndarray] = []
     t1s: list[pl.Series] = []
+    cens: list[np.ndarray] = []
 
     for (_key,), sub in frame.group_by([entity_col], maintain_order=True):
         prices = sub.get_column(price).to_numpy().astype(np.float64)
         times = sub.get_column(time_col)
-        label, ret_out, t1_idx = _triple_barrier_entity(
-            prices, pt, sl, max_holding, vol_lookback
+        sigma = (
+            None
+            if vol is None
+            else sub.get_column(vol).cast(pl.Float64).fill_null(np.nan).to_numpy()
+        )
+        label, ret_out, t1_idx, censored = _triple_barrier_entity(
+            prices, pt, sl, max_holding, vol_lookback, sigma
         )
         labels.append(label)
         rets.append(ret_out)
         t1s.append(times.gather(t1_idx))
+        cens.append(censored)
 
     out = frame.with_columns(
         pl.Series("label", np.concatenate(labels), dtype=pl.Int64),
         pl.Series("ret", np.concatenate(rets), dtype=pl.Float64),
         pl.concat(t1s, rechunk=True).alias("t1"),
+        pl.Series("censored", np.concatenate(cens), dtype=pl.Boolean),
     )
     return out
 
@@ -219,6 +254,7 @@ def fixed_horizon(
     price: str = "close",
     horizon: int,
     threshold: float | None = None,
+    allow_gaps: bool = False,
 ) -> pl.DataFrame:
     """Fixed-horizon forward-return label.
 
@@ -243,6 +279,15 @@ def fixed_horizon(
     threshold : float, optional
         Symmetric return threshold for the ternary sign label. If ``None`` the
         continuous forward return is returned in ``label``.
+    allow_gaps : bool, default False
+        The forward return comes from :func:`panelary.factor.forward_return`,
+        the library's single audited negative-shift site, including its gap
+        guard: on an irregular per-entity time grid (more than one distinct
+        time step, e.g. a missing day -- or weekends on a business-day
+        ``Date`` panel) a ``horizon``-row shift spans a different amount of
+        time on different rows, so the call raises. Pass ``True`` to accept a
+        row-count horizon on an irregular grid; ``t1`` still records the true
+        end time of every label, which is what the purge uses.
 
     Returns
     -------
@@ -255,7 +300,13 @@ def fixed_horizon(
             The forward return over ``horizon`` steps.
         ``t1`` : same dtype as ``time``
             Timestamp ``horizon`` steps ahead (``null`` at the tail where the
-            full horizon is unavailable).
+            full horizon is unavailable -- the unresolved, censored labels).
+
+    Raises
+    ------
+    ValueError
+        If ``horizon < 1``, or the time grid is irregular and ``allow_gaps``
+        is False.
     """
     if horizon < 1:
         raise ValueError("horizon must be a positive integer")
@@ -264,11 +315,18 @@ def fixed_horizon(
     entity_col, time_col = _resolve_cols(frame, entity, time)
     frame = frame.sort([entity_col, time_col])
 
-    fwd_price = pl.col(price).shift(-horizon).over(entity_col)
-    ret_expr = (fwd_price / pl.col(price) - 1.0).alias("ret")
-    t1_expr = pl.col(time_col).shift(-horizon).over(entity_col).alias("t1")
-
-    frame = frame.with_columns(ret_expr, t1_expr)
+    aligned = forward_return(
+        frame,
+        entity=entity_col,
+        time=time_col,
+        price=price,
+        horizon=horizon,
+        out="ret",
+        allow_gaps=allow_gaps,
+        end_time="t1",
+    )
+    assert isinstance(aligned, pl.DataFrame)  # a DataFrame in, a DataFrame out
+    frame = aligned
 
     if threshold is None:
         label_expr = pl.col("ret").alias("label")

@@ -57,6 +57,7 @@ from panelary.core.model_selection import (
     CVReport,
     PurgedKFold,
     _purge_embargo_positions,
+    _purge_embargo_positions_t1,
     _train_positions,
     cross_validate,
     expanding_window_split,
@@ -143,6 +144,24 @@ def _time_index(
     return series
 
 
+def _positional_t1(t1: Any, n_times: int) -> np.ndarray | None:
+    """Validate a per-position ``t1`` array (label end times, one per position)."""
+    if t1 is None:
+        return None
+    arr = t1.to_numpy() if isinstance(t1, pl.Series) else np.asarray(t1)
+    if arr.ndim != 1 or arr.shape[0] != n_times:
+        raise ValueError(
+            f"`t1` must hold one label end time per position ({n_times}), got "
+            f"shape {arr.shape}."
+        )
+    return arr
+
+
+def _axis_values(index: pl.Series | None, n_times: int) -> np.ndarray:
+    """The time values ``t1`` is compared with: ``times``, else the positions."""
+    return index.to_numpy() if index is not None else np.arange(n_times)
+
+
 def _calendar_gap(
     train: np.ndarray, start: int, embargo: Duration, times: pl.Series
 ) -> np.ndarray:
@@ -170,6 +189,7 @@ def cpcv_splits(
     horizon: int | Duration = 0,
     embargo: int | Duration = 0,
     times: Any = None,
+    t1: Any = None,
 ) -> list[IndexSplit]:
     """Combinatorial Purged CV splits as integer time positions.
 
@@ -195,6 +215,11 @@ def cpcv_splits(
     times : array-like or polars.Series, optional
         The sorted unique time values, one per position. Required only for a
         calendar ``horizon`` / ``embargo``.
+    t1 : array-like, optional
+        Per-position label end times (event-based purge; supersedes
+        ``horizon``): values on the ``times`` axis, or positions when ``times``
+        is omitted. The label at position ``j`` spans ``[times[j], t1[j]]``;
+        a null never overlaps anything.
 
     Returns
     -------
@@ -214,9 +239,15 @@ def cpcv_splits(
         embargo=embargo,
     )
     index = _time_index(times, n_times, horizon, embargo)
+    t1_arr = _positional_t1(t1, n_times)
+    if t1_arr is None:
+        folds = cv._iter_folds(n_times, time_index=index)
+    else:
+        folds = cv._iter_folds(
+            n_times, _axis_values(index, n_times), t1_arr, time_index=index
+        )
     return [
-        IndexSplit(f.train_positions, f.test_positions, f.test_groups)
-        for f in cv._iter_folds(n_times, time_index=index)
+        IndexSplit(f.train_positions, f.test_positions, f.test_groups) for f in folds
     ]
 
 
@@ -230,6 +261,7 @@ def walk_forward_splits(
     expanding: bool = True,
     window_size: int | None = None,
     times: Any = None,
+    t1: Any = None,
 ) -> list[IndexSplit]:
     """Purged, embargoed walk-forward splits as integer time positions.
 
@@ -260,6 +292,10 @@ def walk_forward_splits(
     times : array-like or polars.Series, optional
         The sorted unique time values, one per position. Required only for a
         calendar ``horizon`` / ``embargo``.
+    t1 : array-like, optional
+        Per-position label end times (event-based purge; supersedes
+        ``horizon``), as in :func:`cpcv_splits`. A training label is kept only
+        if its span ends before the test block starts.
 
     Returns
     -------
@@ -295,19 +331,31 @@ def walk_forward_splits(
     horizon = validate_duration(horizon, name="horizon")
     embargo = validate_duration(embargo, name="embargo")
     integer = is_steps(horizon) and is_steps(embargo)
+    t1_arr = _positional_t1(t1, n_times)
+    axis = _axis_values(index, n_times) if t1_arr is not None else None
 
     out: list[IndexSplit] = []
     for s in range(n_splits):
         start = first_test + s * test_size
         stop = start + test_size
         test = np.arange(start, stop, dtype=np.int64)
-        if integer:
+        if t1_arr is not None and is_steps(embargo):
+            assert axis is not None
+            allowed = _purge_embargo_positions_t1(
+                n_times, test, axis, t1_arr, as_steps(embargo)
+            )
+        elif integer and t1_arr is None:
             allowed = _purge_embargo_positions(
                 n_times, test, as_steps(horizon), as_steps(embargo)
             )
         else:
             allowed = _train_positions(
-                n_times, test, horizon=horizon, embargo=embargo, times=index
+                n_times,
+                test,
+                horizon=horizon,
+                embargo=embargo,
+                times=index,
+                t1=t1_arr,
             )
         lo = 0 if expanding else max(0, start - window_size)
         train = allowed[(allowed < start) & (allowed >= lo)]
