@@ -83,52 +83,94 @@ def _has_variance(
     return keep
 
 
-def _window_kernel(block: NDArray[np.float64], kind: str) -> tuple[float, int]:
-    """Average correlation of one compacted window (rows = dates, columns = names).
+def _window_kernel(
+    block: NDArray[np.float64],
+    kind: str,
+    codes: NDArray[np.int64] | None = None,
+    *,
+    overwrite: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.int64]]:
+    """Average correlation of one compacted window, pooled or per group.
 
-    Two-pass centring per name (no raw-sum cancellation), zero after demeaning
-    for the few missing cells a coverage threshold below 1 admits, and the
-    scale ``sigma_i = sqrt(sum_obs d^2 / (n_i - 1))``. With ``D`` the centred
-    window and ``n_eff = rows - 1``:
+    ``block`` is one date's window (rows = dates, columns = that date's
+    universe). Two-pass centring per name (no raw-sum cancellation), zero after
+    demeaning for the few missing cells a coverage threshold below 1 admits,
+    and the scale ``sigma_i = sqrt(sum_obs d^2 / (n_i - 1))``. With ``D`` the
+    centred window, ``n_eff = rows - 1`` and, per group ``g`` of ``N_g`` names:
 
-    * ``equal``: ``Z = D / sigma`` and ``rho = (||Z 1||^2 - sum_i ||z_i||^2) /
-      (n_eff N (N - 1))`` -- the mean off-diagonal entry of ``Z'Z / n_eff``,
-      from one pass over the window instead of an ``N x N`` matrix. On a
-      complete window ``||z_i||^2 = rows - 1`` and this is the identity
-      ``rho = (||Z 1||^2 / n_eff - N) / (N (N - 1))``.
+    * ``equal``: ``Z = D / sigma`` and ``rho_g = (||Z 1_g||^2 - sum_{i in g}
+      ||z_i||^2) / (n_eff N_g (N_g - 1))`` -- the mean off-diagonal entry of
+      ``Z'Z / n_eff`` within the group, from one pass over the window instead
+      of an ``N x N`` matrix. On a complete window ``||z_i||^2 = rows - 1``
+      and this is ``rho = (||Z 1||^2 / n_eff - N) / (N (N - 1))``.
     * ``pollet_wilson``: ``sum_{i != j} cov_ij / sum_{i != j} sigma_i sigma_j``
-      with ``sum_{i != j} cov_ij = (||D 1||^2 - sum_i ||d_i||^2) / n_eff``.
+      with ``sum_{i != j} cov_ij = (||D 1_g||^2 - sum_i ||d_i||^2) / n_eff``.
+
+    Every group's ``Z 1_g`` comes from one product ``D @ M``, ``M[i, g]`` the
+    weight of name ``i`` in its group ``g``: a date's moments are computed once
+    however many groups it has. All shapes are those of the date's own
+    universe, so the arithmetic does not change when later data arrives.
 
     Names with no variance in the window have no correlation and are dropped
-    (see :func:`_has_variance`). Returns ``(rho, N used)``; ``rho`` is NaN when fewer than two names remain.
+    (see :func:`_has_variance`). ``codes`` gives each column's group (``None``:
+    one group). Returns ``(rho, n, labels)`` per group present in ``codes``:
+    ``rho`` is NaN where fewer than two names with a variance remain, and
+    ``n`` counts those names. ``overwrite=True`` lets a complete ``block`` (the
+    caller's own compacted copy) be centred in place.
     """
-    rows = block.shape[0]
+    rows, width = block.shape
+    if codes is None:
+        labels = np.zeros(1, dtype=np.int64)
+        gid_all = np.zeros(width, dtype=np.int64)
+    else:
+        labels, gid_all = np.unique(codes, return_inverse=True)
+    n_groups = labels.size
     finite = np.isfinite(block)
     if finite.all():
-        counts = np.full(block.shape[1], rows, dtype=np.int64)
+        counts = np.full(width, rows, dtype=np.int64)
         mean = block.mean(axis=0)
-        dev = block - mean
+        if overwrite:
+            dev = block
+            dev -= mean
+        else:
+            dev = block - mean
     else:
         counts = finite.sum(axis=0)
         mean = np.where(finite, block, 0.0).sum(axis=0) / np.maximum(counts, 1)
         dev = np.where(finite, block - mean, 0.0)
     sumsq = np.einsum("ij,ij->j", dev, dev)
-    keep = _has_variance(sumsq, counts, mean)
+    keep = _has_variance(sumsq, counts, mean) & (counts >= 2)
     if not keep.all():
         dev, sumsq, counts = dev[:, keep], sumsq[keep], counts[keep]
-    n = dev.shape[1]
-    if n < 2 or rows < 2:
-        return float("nan"), n
-    n_eff = float(rows - 1)
+    gid = gid_all[keep]
+    n_g = np.bincount(gid, minlength=n_groups).astype(np.int64)
+    rho = np.full(n_groups, np.nan, dtype=np.float64)
+    if rows < 2 or not (n_g >= 2).any():
+        return rho, n_g, labels
     var = sumsq / (counts - 1)
-    if kind == "equal":
-        row = (dev / np.sqrt(var)).sum(axis=1)
-        diag = float(np.sum(counts - 1))
-        return (float(row @ row) - diag) / (n_eff * n * (n - 1)), n
-    row = dev.sum(axis=1)
-    off = (float(row @ row) - float(sumsq.sum())) / n_eff
-    sd_sum = float(np.sqrt(var).sum())
-    return off / (sd_sum * sd_sum - float(var.sum())), n
+    sd = np.sqrt(var)
+    weights = 1.0 / sd if kind == "equal" else np.ones_like(sd)
+    if n_groups == 1:
+        row_sums = (dev @ weights)[:, None]
+    else:
+        member_weight = np.zeros((gid.size, n_groups), dtype=np.float64)
+        member_weight[np.arange(gid.size), gid] = weights
+        row_sums = dev @ member_weight
+    sq = np.einsum("ij,ij->j", row_sums, row_sums)
+    n_eff = float(rows - 1)
+    ng = n_g.astype(np.float64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        if kind == "equal":
+            diag = np.bincount(gid, weights=counts - 1.0, minlength=n_groups)
+            value = (sq - diag) / (n_eff * ng * (ng - 1.0))
+        else:
+            own = np.bincount(gid, weights=sumsq, minlength=n_groups)
+            sd_sum = np.bincount(gid, weights=sd, minlength=n_groups)
+            var_sum = np.bincount(gid, weights=var, minlength=n_groups)
+            value = ((sq - own) / n_eff) / (sd_sum * sd_sum - var_sum)
+    ok = n_g >= 2
+    rho[ok] = value[ok]
+    return rho, n_g, labels
 
 
 def _rolling_columns(
@@ -345,10 +387,8 @@ def _avg_corr_pooled(
     values = dense.values
     n_time = values.shape[0]
     rho = np.full(n_time, np.nan, dtype=np.float64)
-    # Size of the universe used: the qualifying names, less any the kernel
-    # drops for having no variance (overwritten below where it runs).
-    used = universe.sum(axis=1).astype(np.int64)
-    todo = np.flatnonzero(used >= min_n)
+    used = np.zeros(n_time, dtype=np.int64)
+    todo = np.flatnonzero(universe.any(axis=1))
     stable: NDArray[np.bool_] | None = None
     if kind == "pollet_wilson":
         fast, stable, n_full = _pollet_wilson_fast(values, window)
@@ -359,10 +399,12 @@ def _avg_corr_pooled(
     for t in todo:
         lo = max(0, int(t) - window + 1)
         members = np.flatnonzero(universe[t])
-        value, n = _window_kernel(values[lo : t + 1, members], kind)
-        used[t] = n
-        if n >= min_n:
-            rho[t] = value
+        value, n, _labels = _window_kernel(
+            values[lo : t + 1, members], kind, overwrite=True
+        )
+        used[t] = n[0]
+        if n[0] >= min_n:
+            rho[t] = value[0]
     columns: dict[str, Any] = {
         dense.time_col: dense.times,
         "avg_corr": _nullify(rho),
@@ -381,42 +423,38 @@ def _avg_corr_groups(
     min_n: int,
     group: str,
 ) -> pl.DataFrame:
+    """One kernel call per date; each group's value from the shared moments."""
     values = dense.values
     codes = dense.group_codes
     labels = dense.group_labels
     if codes is None or labels is None:  # pragma: no cover - set by dense_matrix
         raise RuntimeError("group codes missing from a grouped pivot")
-    out_t: list[int] = []
-    out_g: list[int] = []
-    out_rho: list[float] = []
-    out_n: list[int] = []
-    for t in range(values.shape[0]):
-        members = np.flatnonzero(universe[t])
-        if members.size == 0:
-            continue
-        member_codes = codes[t, members]
-        labelled = member_codes >= 0
-        members, member_codes = members[labelled], member_codes[labelled]
-        lo = max(0, t - window + 1)
-        for code in np.unique(member_codes):
-            sub = members[member_codes == code]
-            value, n = float("nan"), int(sub.size)
-            if sub.size >= min_n:
-                value, n = _window_kernel(values[lo : t + 1, sub], kind)
-                if n < min_n:
-                    value = float("nan")
-            out_t.append(t)
-            out_g.append(int(code))
-            out_rho.append(value)
-            out_n.append(n)
-    t_idx = np.asarray(out_t, dtype=np.int64)
-    g_idx = np.asarray(out_g, dtype=np.int64)
+    out_t: list[NDArray[np.int64]] = []
+    out_g: list[NDArray[np.int64]] = []
+    out_rho: list[NDArray[np.float64]] = []
+    out_n: list[NDArray[np.int64]] = []
+    for t in np.flatnonzero((universe & (codes >= 0)).any(axis=1)):
+        members = np.flatnonzero(universe[t] & (codes[t] >= 0))
+        lo = max(0, int(t) - window + 1)
+        rho, n_g, present = _window_kernel(
+            values[lo : t + 1, members], kind, codes[t, members], overwrite=True
+        )
+        rho[n_g < min_n] = np.nan
+        out_t.append(np.full(present.size, t, dtype=np.int64))
+        out_g.append(present)
+        out_rho.append(rho)
+        out_n.append(n_g)
+    empty_i = np.zeros(0, dtype=np.int64)
+    t_idx = np.concatenate(out_t) if out_t else empty_i
+    g_idx = np.concatenate(out_g) if out_g else empty_i
     state = pl.DataFrame(
         {
             dense.time_col: dense.times.gather(t_idx),
             group: labels.gather(g_idx),
-            "avg_corr": _nullify(np.asarray(out_rho, dtype=np.float64)),
-            "n_entities": pl.Series(out_n, dtype=pl.Int64),
+            "avg_corr": _nullify(np.concatenate(out_rho) if out_rho else np.zeros(0)),
+            "n_entities": pl.Series(
+                np.concatenate(out_n) if out_n else empty_i, dtype=pl.Int64
+            ),
         }
     )
     return state.sort([dense.time_col, group], maintain_order=True)
