@@ -81,7 +81,7 @@ Problem." *Journal of Financial Data Science*, 1(1).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
 import numpy as np
@@ -975,7 +975,7 @@ def assert_causal(
     *,
     entity: str,
     time: str,
-    cut_fractions: Sequence[float] = (0.4, 0.6, 0.8),
+    cut_fractions: Sequence[float] | None = None,
     rtol: float = 1e-9,
     atol: float = 1e-12,
     raise_on_fail: bool = False,
@@ -1011,8 +1011,14 @@ def assert_causal(
         A panel frame containing ``entity`` and ``time``.
     entity, time : str
         Panel key columns.
-    cut_fractions : sequence of float, default=(0.4, 0.6, 0.8)
-        Fractions of the distinct timestamps at which to truncate.
+    cut_fractions : sequence of float, optional
+        Fractions of the distinct timestamps at which to truncate. By default
+        the cuts of :func:`panelary.testing.assert_prefix_invariant` are used:
+        a consecutive pair at 20%, 40%, 60% and 80% of the axis. A few round
+        fractions are not enough -- ``(0.4, 0.6, 0.8)`` on 240 dates cuts after
+        dates 95, 143 and 191, all ends of a 12-step period, so a period-mean
+        leak passed -- while one cut of a consecutive pair always falls inside
+        a period longer than one step.
     rtol, atol : float
         Numeric tolerances for the comparison.
     raise_on_fail : bool, default=False
@@ -1062,13 +1068,13 @@ def assert_causal(
     out = "__pk_causal__"
     full = frame.select(expr.alias(out)).get_column(out)
 
-    cuts = sorted(
-        {
-            k
-            for k in (int(round(f * n_times)) for f in cut_fractions)
-            if 2 <= k < n_times
-        }
-    )
+    if cut_fractions is None:
+        from panelary.testing import _default_cut_positions
+
+        ks: Iterable[int] = (i + 1 for i in _default_cut_positions(n_times))
+    else:
+        ks = (int(round(f * n_times)) for f in cut_fractions)
+    cuts = sorted({k for k in ks if 2 <= k < n_times})
     if not cuts:
         cuts = [max(2, n_times - 1)]
 
