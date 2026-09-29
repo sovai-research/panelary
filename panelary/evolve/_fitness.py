@@ -121,6 +121,11 @@ PoolObjective = Literal["ic", "icir", "lcb"]
 #: per-date correlation is pure noise and the date is dropped, not shrunk.
 MIN_CROSS_SECTION: int = 5
 
+#: Row-index column :class:`PanelEvaluator` adds to its frame. It is how every
+#: compiled value is put back at its evaluator row, whatever order the compiler
+#: returns rows in. Shares the compiler's ``__ev_`` prefix, never a digest.
+_ROW: str = "__ev_row"
+
 #: 1/e — the conventional decay threshold for the ACF-crossing horizon.
 _INV_E: float = 1.0 / math.e
 
@@ -1343,6 +1348,11 @@ class PanelEvaluator:
     compile_fn : callable, optional, keyword-only
         Override for ``_compile.compile_population`` (imported lazily so this
         module is usable before the compiler lands, and testable without it).
+        It is called as ``compile_fn(genomes, ctx, lf, keep=(row_col,))`` and
+        must carry the ``keep`` columns through, as ``compile_population``
+        does. Rows may come back in any order: values are matched to targets
+        through that row-index column, never by position, so
+        ``compile_population``'s ``sort=True`` and ``sort=False`` score alike.
     """
 
     def __init__(
@@ -1445,12 +1455,24 @@ class PanelEvaluator:
         missing = [c for c in self.ctx.base_columns if c not in names]
         if missing:
             raise ValueError(f"base columns {missing} not found in panel.")
+        if _ROW in names:
+            raise ValueError(
+                f"column {_ROW!r} is reserved by the evaluator; rename it."
+            )
         # Sorting by (time, entity) is doubly load-bearing: dates become
         # contiguous slices (the whole reduceat design), *and* every entity's
         # rows stay in time order, which is what `.over(entity)` rolling
         # operators require of the compiler.
-        return lf.drop_nulls(subset=[self.target]).sort(
-            [self.ctx.time, self.ctx.entity]
+        #
+        # The row index records that order. The compiler is free to return
+        # rows in another order -- `compile_population` sorts by
+        # (entity, time) by default -- so `_materialise` puts every compiled
+        # value back at its evaluator row through this index before a single
+        # value is paired with `self.y`.
+        return (
+            lf.drop_nulls(subset=[self.target])
+            .sort([self.ctx.time, self.ctx.entity])
+            .with_row_index(_ROW)
         )
 
     def _materialise_keys(self) -> None:
@@ -1561,7 +1583,7 @@ class PanelEvaluator:
             from panelary.evolve._compile import compile_population
 
             fn = compile_population
-        out_lf, cols = fn(list(genomes), self.ctx, self._lf)
+        out_lf, cols = fn(list(genomes), self.ctx, self._lf, keep=(_ROW,))
         # `compile_population` returns one name per genome *in genome order*,
         # and semantically identical genomes deliberately collapse onto a single
         # shared DAG node — so `cols` may repeat a name. That is the
@@ -1573,20 +1595,33 @@ class PanelEvaluator:
         # its own FitnessResult: each consumed a trial, and the TrialLedger has
         # to count them or `N` is understated and the deflation too weak.
         uniq = list(dict.fromkeys(cols))
-        mat = (
-            out_lf.select([pl.col(c).cast(pl.Float64) for c in uniq])
-            .collect()
-            .to_numpy()
-        )
-        pos = {name: i for i, name in enumerate(uniq)}
-        arr = np.asarray(mat, dtype=np.float64)[:, [pos[c] for c in cols]]
-        if arr.shape[0] != self.n_rows:
+        frame = out_lf.select(
+            [pl.col(_ROW), *[pl.col(c).cast(pl.Float64) for c in uniq]]
+        ).collect()
+        if frame.height != self.n_rows:
             raise ValueError(
-                f"the compiler returned {arr.shape[0]} rows but the evaluator "
+                f"the compiler returned {frame.height} rows but the evaluator "
                 f"holds {self.n_rows}; the compiled frame must preserve row "
-                "order and cardinality."
+                "cardinality."
             )
-        return arr
+        # The compiler may reorder rows (`compile_population` returns them in
+        # (entity, time) order unless `sort=False`), while `self.y` is in the
+        # evaluator's (time, entity) order. Pairing the two by position scores
+        # every formula against a shuffled target. Scatter each compiled row
+        # back to its evaluator row instead, so the result does not depend on
+        # the order the compiler chose.
+        row = frame[_ROW].to_numpy().astype(np.int64, copy=False)
+        if not np.array_equal(
+            np.bincount(row, minlength=self.n_rows), np.ones(self.n_rows, np.int64)
+        ):
+            raise ValueError(
+                "the compiled frame must carry every evaluator row exactly once "
+                f"(via the {_ROW!r} column passed in `keep`)."
+            )
+        pos = {name: i for i, name in enumerate(uniq)}
+        mat = np.empty((self.n_rows, len(uniq)), dtype=np.float64)
+        mat[row] = frame.select(uniq).to_numpy()
+        return mat[:, [pos[c] for c in cols]]
 
     # -- baselines --------------------------------------------------------- #
     def _ridge_residual(self, train_rows: np.ndarray) -> np.ndarray:
