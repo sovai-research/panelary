@@ -180,3 +180,132 @@ def test_yang_zhang_default_gate_holds() -> None:
     mse_yz = float(np.mean((yz - 1.0) ** 2))
     mse_gkyz = float(np.mean((gkyz - 1.0) ** 2))
     assert not mse_gkyz < 0.95 * mse_yz
+
+
+# --------------------------------------------------------------------------- #
+# Spreads (plan 5 §1c; benchmarks/ohlc_vol/spread_mc.py has the full table)
+# --------------------------------------------------------------------------- #
+from panelary.econ.features import ohlc_spread  # noqa: E402
+
+_SPREAD_REGIMES = {
+    "mid": {"spread": 0.005, "sigma": 0.02, "prob": 1.0},
+    "thin": {"spread": 0.005, "sigma": 0.02, "prob": 0.1},
+    "illiquid": {"spread": 0.02, "sigma": 0.03, "prob": 0.02},
+    "liquid": {"spread": 0.001, "sigma": 0.015, "prob": 1.0},
+}
+
+
+def _spread_bars(n_ent, n_bars, *, spread, sigma, prob, rng, k=390, overnight=0.2):
+    """Trades at the efficient log price +- S/2 (random side); bars from trades.
+
+    ``k`` trade opportunities a day, each taken with probability ``prob``; 20% of
+    the daily variance overnight; a day without a trade is a flat bar at the
+    previous close.
+    """
+    days = n_ent * n_bars
+    sd_in = sigma * math.sqrt((1.0 - overnight) / k)
+    rel = np.full((days, 4), np.nan)
+    move = np.empty(days)
+    chunk = max(1, 4_000_000 // k)
+    for s in range(0, days, chunk):
+        d = min(chunk, days - s)
+        path = np.cumsum(rng.standard_normal((d, k)) * sd_in, axis=1)
+        hit = rng.random((d, k)) < prob
+        side = rng.integers(0, 2, (d, k)) * 2.0 - 1.0
+        trades = np.where(hit, path + side * spread / 2.0, np.nan)
+        rows = np.arange(d)
+        any_hit = hit.any(axis=1)
+        filled = np.where(any_hit[:, None], np.where(hit, trades, -np.inf), 0.0)
+        rel[s : s + d, 1] = np.where(any_hit, filled.max(axis=1), np.nan)
+        filled = np.where(any_hit[:, None], np.where(hit, trades, np.inf), 0.0)
+        rel[s : s + d, 2] = np.where(any_hit, filled.min(axis=1), np.nan)
+        rel[s : s + d, 0] = trades[rows, np.argmax(hit, axis=1)]
+        rel[s : s + d, 3] = trades[rows, k - 1 - np.argmax(hit[:, ::-1], axis=1)]
+        move[s : s + d] = path[:, -1]
+    inc = rng.standard_normal((n_ent, n_bars)) * sigma * math.sqrt(overnight)
+    inc[:, 1:] += move.reshape(n_ent, n_bars)[:, :-1]
+    start = np.cumsum(inc, axis=1).ravel()
+    names = ("open", "high", "low", "close")
+    frame = pl.DataFrame(
+        {
+            "e": np.repeat(np.arange(n_ent), n_bars),
+            "t": np.tile(np.arange(n_bars), n_ent),
+            "start": start,
+            **{n: rel[:, j] + start for j, n in enumerate(names)},
+        }
+    ).with_columns(pl.col(n).fill_nan(None) for n in names)
+    stale = pl.coalesce(
+        pl.col("close").forward_fill().shift(1).over("e"), pl.col("start")
+    )
+    return frame.with_columns(stale.alias("stale")).select(
+        "e", "t", *((pl.coalesce(n, "stale").exp() * 50.0).alias(n) for n in names)
+    )
+
+
+def _spread_errors(regime, n, windows, seed):
+    p = _SPREAD_REGIMES[regime]
+    bars = _spread_bars(windows, n, rng=np.random.default_rng(seed), **p)
+    out = {}
+    for method in ("edge", "corwin_schultz", "abdi_ranaldo"):
+        res = ohlc_spread(bars, entity="e", time="t", method=method, window=n)
+        last = res.filter(pl.col("t") == n - 1)
+        est = last[f"spread_{method}_{n}"].to_numpy().astype(float)
+        out[method] = math.sqrt(np.mean((est - p["spread"]) ** 2)) / p["spread"]
+        if method == "edge":
+            m = float(np.mean(last[f"spread_edge_moment_{n}"].to_numpy()))
+            out["edge_pooled"] = math.copysign(math.sqrt(abs(m)), m) / p["spread"]
+    return out
+
+
+@pytest.fixture(scope="module")
+def spread_mc():
+    """RMSE / S (and EDGE's pooled root moment) per regime and window."""
+    windows = {21: 1500, 63: 800, 252: 300}
+    return {
+        (regime, n): _spread_errors(regime, n, windows[n], seed=7000 + i * 10 + j)
+        for i, regime in enumerate(_SPREAD_REGIMES)
+        for j, n in enumerate((21, 63, 252))
+    }
+
+
+@pytest.mark.parametrize("regime", ["mid", "illiquid"])
+def test_edge_pooled_moment_is_unbiased(spread_mc, regime) -> None:
+    for n in (21, 63, 252):
+        assert spread_mc[(regime, n)]["edge_pooled"] == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.parametrize("regime", ["mid", "thin", "illiquid", "liquid"])
+def test_edge_error_falls_with_the_window(spread_mc, regime) -> None:
+    rmse = [spread_mc[(regime, n)]["edge"] for n in (21, 63, 252)]
+    assert rmse[0] > rmse[1] > rmse[2]
+
+
+@pytest.mark.parametrize("regime", ["mid", "illiquid", "liquid"])
+def test_edge_beats_corwin_schultz_on_longer_windows(spread_mc, regime) -> None:
+    """CS's zero-clipping is a bias floor that more data cannot remove."""
+    for n in (63, 252):
+        assert spread_mc[(regime, n)]["edge"] < spread_mc[(regime, n)]["corwin_schultz"]
+    cs = [spread_mc[(regime, n)]["corwin_schultz"] for n in (21, 63, 252)]
+    assert cs[2] > 0.8 * cs[1]  # CS barely improves from 63 to 252 bars
+
+
+def test_thin_trading_is_where_corwin_schultz_holds_out_longest(spread_mc) -> None:
+    """Measured, and narrower than the plan's "EDGE wins at n >= 63 everywhere".
+
+    With 10% of trade opportunities taken, CS beats EDGE at 21 bars (0.56 vs
+    0.72 RMSE / S) and is level with it at 63 (0.46 vs 0.48); EDGE only pulls
+    ahead by 252 bars, where CS's clipping floor binds.
+    """
+    thin = {n: spread_mc[("thin", n)] for n in (21, 63, 252)}
+    assert thin[21]["corwin_schultz"] < thin[21]["edge"]
+    assert thin[252]["edge"] < thin[252]["corwin_schultz"]
+
+
+def test_no_ohlc_estimator_resolves_a_small_spread(spread_mc) -> None:
+    """The honest caveat: S = 0.1% at 1.5% daily volatility is below resolution.
+
+    This test exists to prove the caveat is real. Never "fix" it by loosening.
+    """
+    for n in (21, 63):
+        for method in ("edge", "corwin_schultz", "abdi_ranaldo"):
+            assert spread_mc[("liquid", n)][method] > 1.0

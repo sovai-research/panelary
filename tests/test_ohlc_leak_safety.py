@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from panelary.econ.features import range_volatility
+from panelary.econ.features import ohlc_spread, range_volatility
 from panelary.testing import assert_no_lookahead, assert_prefix_invariant
 
 ENTITY, TIME = "e", "t"
@@ -189,6 +189,96 @@ def test_trap7_a_bad_future_bar_is_never_filled_backwards() -> None:
             col = f"vol_{method}_5"
             upto = pl.col(TIME) <= 30
             assert a.filter(upto)[col].to_list() == b.filter(upto)[col].to_list()
+
+
+# --------------------------------------------------------------------------- #
+# OHLC spreads
+# --------------------------------------------------------------------------- #
+_SPREADS = ["edge", "corwin_schultz", "abdi_ranaldo"]
+
+
+@pytest.mark.parametrize("method", _SPREADS)
+@pytest.mark.parametrize(("window", "min_periods"), [(8, None), (8, 4), (None, 5)])
+def test_ohlc_spread_is_causal_and_prefix_invariant(
+    method, window, min_periods
+) -> None:
+    def op(df):
+        return ohlc_spread(
+            df,
+            entity=ENTITY,
+            time=TIME,
+            method=method,
+            window=window,
+            min_periods=min_periods,
+            negative="signed",
+            batch_entities=2,
+        )
+
+    _both(op, ohlc_panel())
+
+
+def _leaky_corwin_schultz(df: pl.DataFrame) -> pl.DataFrame:
+    """Trap 1: the paper's (t, t+1) pair written with shift(-1), on row t."""
+    h, lo = pl.col("high").log(), pl.col("low").log()
+    staged = df.sort(ENTITY, TIME).with_columns(
+        h.alias("h"),
+        lo.alias("l"),
+        h.shift(-1).over(ENTITY).alias("h1"),  # <- the leak
+        lo.shift(-1).over(ENTITY).alias("l1"),
+    )
+    h, lo, h1, l1 = (pl.col(c) for c in ("h", "l", "h1", "l1"))
+    beta = (h - lo) ** 2 + (h1 - l1) ** 2
+    hi2 = pl.when(h >= h1).then(h).otherwise(h1)
+    lo2 = pl.when(lo <= l1).then(lo).otherwise(l1)
+    k = 3.0 - 2.0 * math.sqrt(2.0)
+    alpha = ((2 * beta).sqrt() - beta.sqrt()) / k - ((hi2 - lo2) ** 2 / k).sqrt()
+    return staged.with_columns((2.0 * (alpha / 2).tanh()).alias("s2")).with_columns(
+        pl.col("s2").rolling_mean(5).over(ENTITY).alias("cs")
+    )
+
+
+def test_trap1_forward_indexed_two_day_pairs_are_detected() -> None:
+    panel = ohlc_panel().filter(pl.col(ENTITY) != "b")
+    with pytest.raises(AssertionError, match="LOOK-AHEAD LEAK DETECTED"):
+        assert_no_lookahead(_leaky_corwin_schultz, panel, entity=ENTITY, time=TIME)
+
+    # ... and the shipped estimator, indexed by the later bar, is clean
+    def ours(df):
+        return ohlc_spread(
+            df, entity=ENTITY, time=TIME, method="corwin_schultz", window=6
+        )
+
+    assert_no_lookahead(ours, panel, entity=ENTITY, time=TIME)
+
+
+def test_trap13_window_equal_to_the_data_length_is_detected() -> None:
+    """``bidask.edge_expanding``-style: window = len(df), pandas-default periods."""
+    panel = ohlc_panel().filter(pl.col(ENTITY) == "a")
+
+    def leaky(df):
+        # (aliased, so both runs emit the same column name to compare)
+        return ohlc_spread(df, entity=ENTITY, time=TIME, window=df.height, alias="s")
+
+    with pytest.raises(AssertionError, match="PREFIX-INVARIANCE VIOLATION"):
+        assert_prefix_invariant(leaky, panel, entity=ENTITY, time=TIME)
+
+    def ours(df):
+        return ohlc_spread(df, entity=ENTITY, time=TIME, window=None, min_periods=10)
+
+    assert_prefix_invariant(ours, panel, entity=ENTITY, time=TIME)
+
+
+def test_trap7_spreads_never_fill_a_bad_future_bar_backwards() -> None:
+    base = ohlc_panel().filter(pl.col(ENTITY) == "a")
+    broken = base.with_columns(
+        pl.when(pl.col(TIME) == 31).then(-1.0).otherwise(pl.col("low")).alias("low")
+    )
+    for method in _SPREADS:
+        a = ohlc_spread(base, entity=ENTITY, time=TIME, method=method, window=5)
+        b = ohlc_spread(broken, entity=ENTITY, time=TIME, method=method, window=5)
+        col = f"spread_{method}_5"
+        upto = pl.col(TIME) <= 30
+        assert a.filter(upto)[col].to_list() == b.filter(upto)[col].to_list()
 
 
 # --------------------------------------------------------------------------- #

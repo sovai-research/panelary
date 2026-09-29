@@ -42,15 +42,20 @@ import polars as pl
 __all__ = [
     "GK_CLOSE_WEIGHT",
     "INVALID_POLICIES",
+    "CS_TERM",
+    "EDGE_TERM",
+    "LAG_COLUMNS",
     "LOG_COLUMNS",
     "PARKINSON_SCALE",
-    "cs_two_day_spread",
     "ar_two_day_square",
+    "check_invalid_policy",
+    "cs_two_day_spread",
     "discreteness_factor",
     "edge_moment_exprs",
     "edge_pair_exprs",
     "edge_square_spread",
     "entity_blocks",
+    "lag_exprs",
     "map_entity_blocks",
     "prepare_log_prices",
     "trailing_mean",
@@ -73,6 +78,13 @@ LOG_COLUMNS: dict[str, str] = {
     "high": "__ohlc_h",
     "low": "__ohlc_l",
     "close": "__ohlc_c",
+}
+
+#: Internal column of each role's previous-bar log price (``shift(1)``).
+LAG_COLUMNS: dict[str, str] = {
+    "high": "__ohlc_h1",
+    "low": "__ohlc_l1",
+    "close": "__ohlc_c1",
 }
 
 _ROLES: tuple[str, ...] = ("open", "high", "low", "close")
@@ -215,6 +227,19 @@ def prepare_log_prices(
     return work.with_columns(
         pl.col(tmp[role]).log().alias(LOG_COLUMNS[role]) for role in prices
     ).drop(list(tmp.values()))
+
+
+def lag_exprs(entity: str, roles: tuple[str, ...]) -> list[pl.Expr]:
+    """Previous-bar log prices (:data:`LAG_COLUMNS`), one ``shift(1)`` per entity.
+
+    Evaluate these in their own ``with_columns`` before any expression that
+    uses them: nesting a ``.over`` inside another ``.over`` is refused by older
+    polars (1.35) and recomputes the shift for every consumer on newer ones.
+    """
+    return [
+        pl.col(LOG_COLUMNS[r]).shift(1).over(entity).alias(LAG_COLUMNS[r])
+        for r in roles
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -475,6 +500,9 @@ _EDGE_FAMILY2: dict[str, Callable[[dict[str, pl.Expr]], pl.Expr]] = {
 _EDGE_COUNTS: tuple[str, ...] = ("n1", "n2", "ntau")
 _P = "__edge_"  # stage-column prefix
 
+#: Column holding EDGE's squared spread after :func:`edge_square_spread`.
+EDGE_TERM = "__edge_s2"
+
 
 def edge_pair_exprs(entity: str) -> list[list[pl.Expr]]:
     """Stages 1-2 of EDGE, as three consecutive ``with_columns`` batches.
@@ -487,11 +515,13 @@ def edge_pair_exprs(entity: str) -> list[list[pl.Expr]]:
     """
     o, h, lo, c = (pl.col(LOG_COLUMNS[r]) for r in _ROLES)
     lags = [
-        h.shift(1).over(entity).alias(f"{_P}h1"),
-        lo.shift(1).over(entity).alias(f"{_P}l1"),
-        c.shift(1).over(entity).alias(f"{_P}c1"),
+        *lag_exprs(entity, ("high", "low", "close")),
+        # r1 is the one within-bar return: the reference drops it on the first
+        # bar of every window, which on a row-based window means "no previous
+        # row" -- only an entity's first row, even when that row is missing.
+        (pl.int_range(pl.len()).over(entity) > 0).alias(f"{_P}has_prev"),
     ]
-    h1, l1, c1 = pl.col(f"{_P}h1"), pl.col(f"{_P}l1"), pl.col(f"{_P}c1")
+    h1, l1, c1 = (pl.col(LAG_COLUMNS[r]) for r in ("high", "low", "close"))
     m = (h + lo) / 2.0
     m1 = (h1 + l1) / 2.0
 
@@ -503,7 +533,7 @@ def edge_pair_exprs(entity: str) -> list[list[pl.Expr]]:
 
     tau = indicator((h != lo) | (lo != c1), h, lo, c1)
     base = [
-        (m - o).alias(f"{_P}r1"),
+        pl.when(pl.col(f"{_P}has_prev")).then(m - o).alias(f"{_P}r1"),
         (o - m1).alias(f"{_P}r2"),
         (m - c1).alias(f"{_P}r3"),
         (c1 - m1).alias(f"{_P}r4"),
@@ -547,7 +577,7 @@ def edge_moment_exprs(entity: str, pairs: int | None) -> list[pl.Expr]:
     return out
 
 
-def edge_square_spread(min_pairs: int) -> pl.Expr:
+def edge_square_spread(min_pairs: int) -> list[list[pl.Expr]]:
     """Stage 4 of EDGE: the row-local closed form of the squared spread ``s^2``.
 
     Equals the per-window reference ``bidask.edge`` in exact arithmetic. When a
@@ -556,19 +586,40 @@ def edge_square_spread(min_pairs: int) -> pl.Expr:
     reference's weighting in that degenerate case. Null unless the window holds
     at least two ``tau = 1`` pairs, both ``p_o`` and ``p_c`` are non-zero, and
     each family has at least ``min_pairs`` valid pairs.
+
+    Returned as consecutive ``with_columns`` batches, the last yielding the
+    column :data:`EDGE_TERM`. Written as one expression the closed form costs
+    twice the 39 rolling moments (the weights and the four family moments are
+    re-evaluated inside every term that uses them; eager frames do no
+    common-subexpression elimination).
     """
 
     def m(name: str) -> pl.Expr:
         return pl.col(f"{_P}m_{name}")
 
+    def c(name: str) -> pl.Expr:
+        return pl.col(f"{_P}cf_{name}")
+
     p_tau = m("tau")
     p_o = m("po1") + m("po2")
     p_c = m("pc1") + m("pc2")
-    a = -4.0 / p_o
-    b = -4.0 / p_c
-    a1 = m("r1") / p_tau
-    a3 = m("r3") / p_tau
-    a5 = m("r5") / p_tau
+    weights = [
+        (-4.0 / p_o).alias(f"{_P}cf_a"),
+        (-4.0 / p_c).alias(f"{_P}cf_b"),
+        (m("r1") / p_tau).alias(f"{_P}cf_a1"),
+        (m("r3") / p_tau).alias(f"{_P}cf_a3"),
+        (m("r5") / p_tau).alias(f"{_P}cf_a5"),
+        (
+            (m("ntau") >= 2)
+            & (p_o != 0)
+            & (p_c != 0)
+            & (m("n1") >= max(min_pairs, 1))
+            & (m("n2") >= max(min_pairs, 1))
+        )
+        .fill_null(value=False)
+        .alias(f"{_P}cf_ok"),
+    ]
+    a, b, a1, a3, a5 = c("a"), c("b"), c("a1"), c("a3"), c("a5")
 
     e1 = a * (m("f1_r1r2") - a1 * m("f1_tr2")) + b * (m("f1_r3r4") - a3 * m("f1_tr4"))
     ex1 = (
@@ -602,19 +653,28 @@ def edge_square_spread(min_pairs: int) -> pl.Expr:
             + a1 * a5 * m("f2_tr4r5")
         )
     )
-    n1, n2 = m("n1"), m("n2")
-    v1 = pl.when(n1 <= 1).then(0.0).otherwise((ex1 - e1 * e1).clip(lower_bound=0.0))
-    v2 = pl.when(n2 <= 1).then(0.0).otherwise((ex2 - e2 * e2).clip(lower_bound=0.0))
+    moments = [
+        e1.alias(f"{_P}cf_e1"),
+        ex1.alias(f"{_P}cf_ex1"),
+        e2.alias(f"{_P}cf_e2"),
+        ex2.alias(f"{_P}cf_ex2"),
+    ]
+    e1, ex1, e2, ex2 = c("e1"), c("ex1"), c("e2"), c("ex2")
+    variances = [
+        pl.when(m("n1") <= 1)
+        .then(0.0)
+        .otherwise((ex1 - e1 * e1).clip(lower_bound=0.0))
+        .alias(f"{_P}cf_v1"),
+        pl.when(m("n2") <= 1)
+        .then(0.0)
+        .otherwise((ex2 - e2 * e2).clip(lower_bound=0.0))
+        .alias(f"{_P}cf_v2"),
+    ]
+    v1, v2 = c("v1"), c("v2")
     vt = v1 + v2
     s2 = pl.when(vt > 0).then((v2 * e1 + v1 * e2) / vt).otherwise((e1 + e2) / 2.0)
-    ok = (
-        (m("ntau") >= 2)
-        & (p_o != 0)
-        & (p_c != 0)
-        & (n1 >= max(min_pairs, 1))
-        & (n2 >= max(min_pairs, 1))
-    )
-    return pl.when(ok.fill_null(value=False)).then(s2).otherwise(None)
+    final = [pl.when(c("ok")).then(s2).otherwise(None).alias(EDGE_TERM)]
+    return [weights, moments, variances, final]
 
 
 # --------------------------------------------------------------------------- #
@@ -622,9 +682,13 @@ def edge_square_spread(min_pairs: int) -> pl.Expr:
 # --------------------------------------------------------------------------- #
 _SQRT2 = math.sqrt(2.0)
 _CS_DEN = 3.0 - 2.0 * _SQRT2
+_CS = "__cs_"
+
+#: Column holding the Corwin-Schultz two-day spread after :func:`cs_two_day_spread`.
+CS_TERM = "__cs_s"
 
 
-def cs_two_day_spread(entity: str, *, overnight_adjust: bool) -> pl.Expr:
+def cs_two_day_spread(*, overnight_adjust: bool) -> list[list[pl.Expr]]:
     """Corwin-Schultz two-day spread ``S`` of the pair ``(t-1, t)``, on row ``t``.
 
     ``beta = (H_{t-1} - L_{t-1})^2 + (H_t - L_t)^2``,
@@ -635,34 +699,47 @@ def cs_two_day_spread(entity: str, *, overnight_adjust: bool) -> pl.Expr:
     ``t``'s high and low are first shifted by the overnight gap when the
     prior close lies outside them (CS 2012, section III.A). Unclipped: may be
     negative.
+
+    Returned as consecutive ``with_columns`` batches (the last one yields the
+    column :data:`CS_TERM`): an eager frame does no common-subexpression
+    elimination, and the one-expression form re-evaluates the adjusted high
+    and low six times (5.7x slower, measured). Row-local on the log and
+    :data:`LAG_COLUMNS` (high, low, and close when adjusting).
     """
-    h, lo, c = (pl.col(LOG_COLUMNS[r]) for r in ("high", "low", "close"))
-    h1 = h.shift(1).over(entity)
-    l1 = lo.shift(1).over(entity)
+    h, lo = pl.col(LOG_COLUMNS["high"]), pl.col(LOG_COLUMNS["low"])
+    h1, l1 = pl.col(LAG_COLUMNS["high"]), pl.col(LAG_COLUMNS["low"])
+    ah, al, beta = pl.col(f"{_CS}ah"), pl.col(f"{_CS}al"), pl.col(f"{_CS}beta")
     if overnight_adjust:
-        c1 = c.shift(1).over(entity)
+        c1 = pl.col(LAG_COLUMNS["close"])
         # max(0, C_{t-1} - H_t) + min(0, C_{t-1} - L_t): at most one is non-zero.
         gap = (c1 - h).clip(lower_bound=0.0) + (c1 - lo).clip(upper_bound=0.0)
-        ah, al = h + gap, lo + gap
+        adjusted = [(h + gap).alias(f"{_CS}ah"), (lo + gap).alias(f"{_CS}al")]
     else:
-        ah, al = h, lo
-    beta = (h - lo) ** 2 + (h1 - l1) ** 2
-    # Null-propagating max / min (max_horizontal would skip a missing value).
-    hi2 = pl.when(ah >= h1).then(ah).when(ah < h1).then(h1)
-    lo2 = pl.when(al <= l1).then(al).when(al > l1).then(l1)
-    gamma = (hi2 - lo2) ** 2
-    alpha = ((2.0 * beta).sqrt() - beta.sqrt()) / _CS_DEN - (gamma / _CS_DEN).sqrt()
-    return 2.0 * (alpha / 2.0).tanh()
+        adjusted = [h.alias(f"{_CS}ah"), lo.alias(f"{_CS}al")]
+    both = pl.all_horizontal(
+        ah.is_not_null(), al.is_not_null(), h1.is_not_null(), l1.is_not_null()
+    )
+    # max/min_horizontal skip nulls, so a missing side must null the result.
+    gamma = (
+        pl.when(both).then(pl.max_horizontal(ah, h1) - pl.min_horizontal(al, l1)) ** 2
+    )
+    stage2 = [
+        ((h - lo) ** 2 + (h1 - l1) ** 2).alias(f"{_CS}beta"),
+        gamma.alias(f"{_CS}gamma"),
+    ]
+    gam = pl.col(f"{_CS}gamma")
+    alpha = ((2.0 * beta).sqrt() - beta.sqrt()) / _CS_DEN - (gam / _CS_DEN).sqrt()
+    return [adjusted, stage2, [(2.0 * (alpha / 2.0).tanh()).alias(CS_TERM)]]
 
 
-def ar_two_day_square(entity: str) -> pl.Expr:
+def ar_two_day_square() -> pl.Expr:
     """Abdi-Ranaldo two-day squared spread of the pair ``(t-1, t)``, on row ``t``.
 
     ``s^2 = 4 (C_{t-1} - eta_{t-1}) (C_{t-1} - eta_t)`` with ``eta`` the log
-    mid-range ``(H + L) / 2``. May be negative.
+    mid-range ``(H + L) / 2``. May be negative. Row-local on the log and
+    :data:`LAG_COLUMNS` (high, low, close).
     """
-    h, lo, c = (pl.col(LOG_COLUMNS[r]) for r in ("high", "low", "close"))
-    eta = (h + lo) / 2.0
-    eta1 = eta.shift(1).over(entity)
-    c1 = c.shift(1).over(entity)
-    return 4.0 * (c1 - eta1) * (c1 - eta)
+    h, lo = pl.col(LOG_COLUMNS["high"]), pl.col(LOG_COLUMNS["low"])
+    h1, l1 = pl.col(LAG_COLUMNS["high"]), pl.col(LAG_COLUMNS["low"])
+    c1 = pl.col(LAG_COLUMNS["close"])
+    return 4.0 * (c1 - (h1 + l1) / 2.0) * (c1 - (h + lo) / 2.0)

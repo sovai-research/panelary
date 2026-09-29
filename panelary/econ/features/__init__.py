@@ -45,6 +45,11 @@ OHLC volatility (:mod:`._range`)
     :func:`ohlc_variance_terms` exposes the per-bar terms for custom (e.g.
     EWMA) aggregation.
 
+OHLC spreads (:mod:`._spread`)
+    :func:`ohlc_spread` -- the EDGE estimator of Ardia, Guidotti & Kroencke
+    (2024), Corwin-Schultz and Abdi-Ranaldo bid-ask spreads from OHLC bars,
+    with the signed, averaging-safe moment alongside every spread.
+
 Tails (:mod:`._evt`)
     :func:`hill_index`, :func:`gpd_fit`, :func:`pot_var_es` and
     :func:`evt_features` -- trailing-window EVT VaR / expected shortfall.
@@ -213,12 +218,15 @@ __all__ = [
 # independently of the realized-measure block.
 from panelary.econ.features._range import _SPECS as _RANGE_SPECS
 from panelary.econ.features._range import ohlc_variance_terms, range_volatility
+from panelary.econ.features._spread import _SPECS as _SPREAD_SPECS
+from panelary.econ.features._spread import ohlc_spread
 from panelary.registry import registry as _registry
 
 __all__ += [
     "range_volatility",
     "ohlc_variance_terms",
+    "ohlc_spread",
 ]
-for _spec in (*_RANGE_SPECS,):
+for _spec in (*_RANGE_SPECS, *_SPREAD_SPECS):
     _registry.register(_spec)
 del _spec

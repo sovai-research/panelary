@@ -1,0 +1,143 @@
+{
+ "provenance": {
+  "package": "bidask",
+  "version": "2.1.0",
+  "function": "bidask.edge(open, high, low, close, sign=True)",
+  "data": "first 2000 rows of pseudocode/ohlc.csv and pseudocode/ohlc-miss.csv, github.com/eguidotti/bidask (MIT), vendored in this directory",
+  "generated": "2026-09-29, Python 3.13, numpy 2.5.3"
+ },
+ "values": [
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 0,
+   "stop": 2000,
+   "signed_spread": 0.009852477859559446
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 0,
+   "stop": 1000,
+   "signed_spread": 0.008861913688845176
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 0,
+   "stop": 10,
+   "signed_spread": -0.01688991751642203
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 0,
+   "stop": 21,
+   "signed_spread": -0.018301387872560235
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 479,
+   "stop": 500,
+   "signed_spread": -0.022747736887542943
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 1213,
+   "stop": 1234,
+   "signed_spread": 0.005755603038779904
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 1979,
+   "stop": 2000,
+   "signed_spread": -0.008706675270015746
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 0,
+   "stop": 252,
+   "signed_spread": 0.0057260057623767235
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 248,
+   "stop": 500,
+   "signed_spread": 0.011654173893448548
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 982,
+   "stop": 1234,
+   "signed_spread": 0.005161803325545221
+  },
+  {
+   "file": "ohlc_2000.csv.gz",
+   "start": 1748,
+   "stop": 2000,
+   "signed_spread": 0.009154348138128434
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 0,
+   "stop": 2000,
+   "signed_spread": 0.012061764257398648
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 0,
+   "stop": 1000,
+   "signed_spread": 0.012195891340286267
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 0,
+   "stop": 10,
+   "signed_spread": -0.0480229755557417
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 0,
+   "stop": 21,
+   "signed_spread": -0.0213466489055786
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 479,
+   "stop": 500,
+   "signed_spread": -0.005048138235198877
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 1213,
+   "stop": 1234,
+   "signed_spread": 0.006770528929049824
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 1979,
+   "stop": 2000,
+   "signed_spread": -0.010056858270276128
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 0,
+   "stop": 252,
+   "signed_spread": 0.009099874309317739
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 248,
+   "stop": 500,
+   "signed_spread": 0.015437952828663086
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 982,
+   "stop": 1234,
+   "signed_spread": 0.01022412726278986
+  },
+  {
+   "file": "ohlc-miss_2000.csv.gz",
+   "start": 1748,
+   "stop": 2000,
+   "signed_spread": 0.005281630647839382
+  }
+ ]
+}

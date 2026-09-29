@@ -135,6 +135,98 @@ prices (the bid/ask-midpoint flag) must be `abs()`-ed by the caller.
 averaging. It is a constant you supply; it is never inferred from the data, because
 an inferred frequency is a function of the whole sample.
 
+## Bid–ask spreads from OHLC bars
+
+When quotes are absent, the effective spread still leaves a footprint in daily bars:
+trades at the ask and the bid widen the high–low range and pull the close away from
+the range midpoint. `ohlc_spread` reads it three ways:
+
+```python
+from panelary.econ.features import ohlc_spread
+
+spreads = ohlc_spread(bars, entity="ticker", time="date", method="edge", window=21)
+# -> spread_edge_21 (0.01 = 1%), spread_edge_moment_21 (signed s²)
+```
+
+* **`edge`** (default) — the efficient estimator of Ardia, Guidotti & Kroencke
+  (2024), combining two moment conditions from open, high, low and close with
+  GMM-optimal weights.
+* **`corwin_schultz`** — from two consecutive days' high–low ranges, with the
+  paper's overnight adjustment (`overnight_adjust=True`), evaluated as
+  `2·tanh(α/2)` so it stays accurate near zero.
+* **`abdi_ranaldo`** — from the close's position relative to two consecutive
+  range midpoints.
+
+Every two-bar term is indexed by its **later** bar (the papers write them on
+`(t, t+1)`; implementing that with `shift(-1)` leaks a day, and the leak-safety
+suite carries a leaky variant that the checks must catch).
+
+**Window semantics follow the reference `bidask` package:** `window` counts price
+bars, so it holds `window − 1` two-bar pairs; `min_periods` (default `window`) counts
+the same way. `window=None` is an expanding window and requires an explicit
+`min_periods` — never an implicit `len(df)`, which is what `bidask.edge_expanding`
+does and which makes every value depend on how much data follows it.
+
+**Negative estimates.** Each method has a moment that can be negative, and the
+`*_moment` column always carries it: EDGE's `s²`, Abdi–Ranaldo's mean `s_t²`,
+Corwin–Schultz's mean unclipped two-day spread. `negative="literature"` follows each
+paper (EDGE `√|s²|`; CS clips each two-day spread at zero before averaging; AR
+averages `√max(s_t², 0)`); `"signed"` is monotone in the unbiased moment and is the
+recommended choice for ML features; `"abs"`, `"zero"` and `"null"` do what they say.
+**To aggregate across windows, entities or time, average the moment and then take
+the root** — averaging clipped roots is biased.
+
+### How accurate — measured
+
+Simulated efficient log price, 390 trade opportunities a day, 20% of the variance
+overnight, trades at mid ± S/2 with a random side, bars from the observed trades (a
+day with no trade is a flat bar at the previous close); 1500 windows at n = 21 and
+63, 500 at n = 252 (`benchmarks/ohlc_vol/spread_mc.py`, 2026-09-29). Cells are
+**bias / RMSE**, both divided by the true spread, with `negative="literature"`:
+
+| Regime | n | EDGE | Corwin–Schultz | Abdi–Ranaldo | EDGE √mean(s²) / S |
+| --- | ---: | --- | --- | --- | ---: |
+| mid: S = 0.5%, σ = 2%/day | 21 | +33% / **0.67** | +83% / 0.93 | +70% / 0.86 | 0.99 |
+| | 63 | +12% / **0.48** | +84% / 0.88 | +72% / 0.77 | 1.02 |
+| | 252 | −4% / **0.35** | +83% / 0.84 | +70% / 0.71 | 0.99 |
+| thin: same, 10% of opportunities trade | 21 | +40% / 0.72 | +42% / **0.56** | +70% / 0.85 | 0.93 |
+| | 63 | +13% / 0.48 | +41% / **0.46** | +70% / 0.75 | 0.97 |
+| | 252 | −1% / **0.36** | +42% / 0.43 | +71% / 0.72 | 1.02 |
+| illiquid: S = 2%, σ = 3%, 2% trade | 21 | −4% / 0.33 | −47% / 0.49 | −14% / **0.27** | 1.00 |
+| | 63 | 0% / 0.21 | −47% / 0.48 | −13% / **0.18** | 1.02 |
+| | 252 | +2% / **0.10** | −47% / 0.47 | −13% / 0.15 | 1.02 |
+| liquid: S = 0.1%, σ = 1.5% | 21 | RMSE 4.2 | 4.7 | 5.4 | — |
+| | 252 | RMSE 1.9 | 4.5 | 5.1 | — |
+
+* **EDGE's error keeps falling with the window; Corwin–Schultz's does not.** CS
+  clips each two-day estimate at zero, a bias floor that more data cannot remove
+  (0.93 → 0.84 in the mid regime while EDGE goes 0.67 → 0.35).
+* **EDGE's signed moment is unbiased**: pooled over windows, `√mean(s²)` is within
+  3% of the true spread in the mid and illiquid regimes at every window length
+  (thin trading at 21 bars: −7%).
+* **Thin trading favours Corwin–Schultz on short windows** — it beats EDGE at 21
+  bars and ties at 63; EDGE pulls ahead only by 252 bars. On very illiquid names
+  Abdi–Ranaldo is best up to 63 bars.
+* **No OHLC estimator resolves a spread that is small relative to daily
+  volatility** on a monthly window: at S = 0.1% and σ = 1.5% every estimator's
+  error is several times the spread. The accuracy suite asserts this caveat so it
+  can never be "fixed" by loosening a tolerance.
+
+### Parity with the reference implementation
+
+EDGE is computed as 36 trailing means and 3 counts of per-pair products, combined in
+closed form — never a nested expression tree, which polars does not deduplicate
+(the plan measured 554 s and 17.5 GB for that form at 25M rows). It equals the
+per-window reference `bidask.edge` (v2.1.0, MIT) at **every** index, for windows 3
+to 252, on the package's own published test data with and without missing prices:
+on `s²` to ≤ 1e-11 (worst 3e-12 at window 3; ≤ 1e-18 from window 21). Two details
+make that hold with missing data, which `bidask.edge_rolling` (tested only on
+complete data) does not handle: each moment family averages over its own valid
+pairs, and a window where one family has at most one valid pair gets the
+exact-arithmetic value (zero variance) rather than the reference's
+floating-point-residue weighting. The first 2000 rows of both test files are
+vendored under `tests/data/bidask/` with the MIT notice and stored reference values.
+
 ## `.panel.rolling_vol` and the `rs_vol` rename
 
 `.panel.rs_vol` was documented as "Rogers–Satchell-style volatility" but has always
@@ -170,14 +262,25 @@ with other jobs — load average ≈ 14 — so treat these as upper bounds):
 | Parkinson + GK + RS, w = 21 (three calls) | 3.2 s under load; 1.7 s idle | ≤ 2.5 s (fail at 5 s) |
 | Yang–Zhang, w = 21 | 1.4 s | ≤ 3 s |
 | close-to-close, w = 21 | 0.6 s | — |
+| EDGE, w = 21, batched 256 | 4.0 s (5.6 s under heavier load); peak RSS 5.7 GB for the whole process, input included | ≤ 12 s, ≤ 6 GB |
+| EDGE, w = 21, unbatched | 7.9 s; peak RSS 11.9 GB | — |
+| Corwin–Schultz, w = 21 | 2.1 s | ≤ 3 s (target) |
+| Abdi–Ranaldo, w = 21 | 1.2–1.5 s | ≤ 3 s (target) |
 
 Each call sorts, validates and logs its own copy of the prices, so three separate
-calls cost more than the plan's single-pass prototype (1.21 s); the budget's 2×
-failure threshold still holds.
+range calls cost more than the plan's single-pass prototype (1.21 s); the budget's 2×
+failure threshold still holds. Batching entities (`batch_entities=256`, the default)
+halves EDGE's time and memory and is bitwise identical to the unbatched result.
+Staging matters beyond the rolling moments too: an eager polars frame does no
+common-subexpression elimination, so EDGE's closed form and the Corwin–Schultz
+term are each evaluated in consecutive `with_columns` stages (4.6× and 4× faster
+than the same arithmetic as one expression, measured).
 
 ## References
 
 Parkinson (1980), *J. Business* 53(1); Garman & Klass (1980), *J. Business* 53(1);
 Rogers & Satchell (1991), *Ann. Appl. Probab.* 1(4); Yang & Zhang (2000),
 *J. Business* 73(3); Broadie, Glasserman & Kou (1997), *Math. Finance* 7(4);
-Asmussen, Glynn & Pitman (1995), *Ann. Appl. Probab.* 5(4).
+Asmussen, Glynn & Pitman (1995), *Ann. Appl. Probab.* 5(4); Ardia, Guidotti &
+Kroencke (2024), *J. Financial Economics* 161, 103916; Corwin & Schultz (2012),
+*J. Finance* 67(2); Abdi & Ranaldo (2017), *Rev. Financial Studies* 30(12).

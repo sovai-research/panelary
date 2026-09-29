@@ -298,7 +298,31 @@ def _range_volatility_op(frame: Any) -> Any:
     )
 
 
+def _ohlc_spread_op(frame: Any) -> Any:
+    """Every ``ohlc_spread`` method on the OHLC probe, rolling and expanding."""
+    out = _ohlc_probe(frame)
+    for method in ("edge", "corwin_schultz", "abdi_ranaldo"):
+        out = _econ_features.ohlc_spread(
+            out,
+            entity=ENTITY,
+            time=TIME,
+            method=method,
+            window=5,
+            min_periods=3,
+            negative="signed",
+            batch_entities=2,
+        )
+    return _econ_features.ohlc_spread(
+        out, entity=ENTITY, time=TIME, window=None, min_periods=4
+    )
+
+
 _FRAME_OPS["range_volatility"] = _range_volatility_op
+_FRAME_OPS["ohlc_spread"] = _ohlc_spread_op
+_FRAME_OP_RENDERINGS["ohlc_spread"] = (
+    "panelary.econ.features.ohlc_spread(<OHLC probe>, method=<each of 3>, "
+    "window=5, min_periods=3) and window=None, min_periods=4"
+)
 _FRAME_OP_RENDERINGS["range_volatility"] = (
     "panelary.econ.features.range_volatility(<OHLC probe>, method=<each of 6>, "
     "window=5, min_periods=3)"
