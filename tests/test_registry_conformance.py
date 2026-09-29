@@ -189,7 +189,15 @@ _OVER_KEY: dict[str, str] = {"ts": ENTITY, "panel": ENTITY, "xs": TIME}
 #: Registry names that differ from the namespace method name. The registry keys
 #: specs by bare ``name``, so the cross-sectional z-score is registered as
 #: ``cs_zscore`` while the method stays ``.xs.zscore``.
-_METHOD_ALIASES: dict[str, str] = {"cs_zscore": "zscore"}
+_METHOD_ALIASES: dict[str, str] = {
+    "cs_zscore": "zscore",
+    # Cross-sectional distribution summaries (plan covariance-and-market-state
+    # section 4.4): registered with an ``xs_`` prefix, called without it.
+    "xs_dispersion": "dispersion",
+    "xs_tail_index": "tail_index",
+    "xs_up_share": "up_share",
+    "xs_entropy": "entropy",
+}
 
 #: Arguments synthesised for operators with required parameters. Anything not
 #: listed here and not defaulted is skipped with a reason rather than guessed.
@@ -204,6 +212,10 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "rolling_dcor": ((AUX,), {"window": 5}),
     "rolling_tail_dep": ((AUX,), {"window": 10, "q": 0.2}),
     "rolling_gcmi": ((AUX,), {"window": 6}),
+    # Six names per date: q=0.5 gives k=3 exceedances, so the Hill value is
+    # non-null on the probe panel instead of vacuously null (the default
+    # q=0.05 needs 200 names per date).
+    "xs_tail_index": ((), {"q": 0.5, "min_exceedances": 2}),
 }
 
 
@@ -861,7 +873,20 @@ def test_window_evidence_coverage_is_accounted_for() -> None:
 #: a date on purpose, which is the whole point of a cross-sectional operator.
 #: Pinned rather than waved through, so a new entry has to be justified.
 _INTENTIONALLY_NOT_PANEL_SAFE = frozenset(
-    {"demean", "rank", "standardize", "ic", "orthogonalize", "portfolio_sort"}
+    {
+        "demean",
+        "rank",
+        "standardize",
+        "ic",
+        "orthogonalize",
+        "portfolio_sort",
+        # Cross-sectional distribution summaries: one value per date, from
+        # every name on that date (plan covariance-and-market-state 4.4).
+        "xs_dispersion",
+        "xs_tail_index",
+        "xs_up_share",
+        "xs_entropy",
+    }
 )
 
 

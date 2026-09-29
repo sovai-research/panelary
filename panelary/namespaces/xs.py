@@ -237,6 +237,158 @@ def _expr_quantile_bin(expr: pl.Expr, q: int) -> pl.Expr:
     return pl.when(expr.is_null()).then(None).otherwise(idx).cast(pl.Int32)
 
 
+# ---------------------------------------------------------------------------
+# Cross-sectional distribution summaries (plan covariance-and-market-state,
+# section 5.15). Each one reduces its cross-section to ONE number and
+# broadcasts it back over the rows of that cross-section, so under
+# ``.over(date)`` every row of a date carries that date's summary.
+#
+# Shared conventions:
+# * the input is cast to Float64 and NaN is treated as missing, exactly like
+#   null (``fill_nan(None)``), so a NaN never poisons a whole date;
+# * an undefined summary (too few observations, a zero denominator) is null,
+#   never NaN and never a fabricated number;
+# * quantiles are always ``interpolation="linear"`` (numpy's default), fixed
+#   explicitly because the Polars default is ``"nearest"``.
+# ---------------------------------------------------------------------------
+
+#: Consistency constant of the MAD under normality: ``1 / Phi^{-1}(3/4)``.
+#: Written out rather than computed, because this module may import nothing
+#: beyond polars and the registry (see the import boundary above).
+_MAD_SCALE = 1.482602218505602
+
+_VALID_DISPERSION = ("sd", "mad", "iqr", "idr")
+_VALID_TAILS = ("lower", "upper")
+_VALID_ENTROPY = ("share", "hist")
+
+
+def _as_float(expr: pl.Expr) -> pl.Expr:
+    """Cast to Float64 and treat NaN as missing (null)."""
+    return expr.cast(pl.Float64).fill_nan(None)
+
+
+def _linear_quantile(x: pl.Expr, q: float) -> pl.Expr:
+    """``q``-quantile with numpy's default (``linear``) interpolation."""
+    return x.quantile(q, interpolation="linear")
+
+
+def _expr_dispersion(expr: pl.Expr, *, kind: str = "sd") -> pl.Expr:
+    """Build the cross-sectional dispersion expression.
+
+    ``kind``: ``"sd"`` (sample standard deviation, ``ddof=1``), ``"mad"``
+    (median absolute deviation scaled by :data:`_MAD_SCALE`, a consistent
+    estimator of the sd under normality), ``"iqr"`` (q75 - q25) or ``"idr"``
+    (q90 - q10, the interdecile range). See :meth:`XSExprNamespace.dispersion`.
+    """
+    if kind not in _VALID_DISPERSION:
+        raise ValueError(
+            f"xs.dispersion kind must be one of {list(_VALID_DISPERSION)}, "
+            f"got {kind!r}."
+        )
+    x = _as_float(expr)
+    if kind == "sd":
+        return x.std(ddof=1)
+    if kind == "mad":
+        return (x - x.median()).abs().median() * _MAD_SCALE
+    lo, hi = (0.25, 0.75) if kind == "iqr" else (0.1, 0.9)
+    return _linear_quantile(x, hi) - _linear_quantile(x, lo)
+
+
+def _expr_tail_index(
+    expr: pl.Expr,
+    *,
+    q: float = 0.05,
+    tail: str = "lower",
+    min_exceedances: int = 10,
+) -> pl.Expr:
+    """Build the cross-sectional Hill tail-index expression.
+
+    Losses are ``L = -x`` (``tail="lower"``) or ``L = x`` (``"upper"``). With
+    ``n`` the non-null count and ``k = floor(q * n)``, the threshold ``u`` is the
+    ``(k + 1)``-th largest loss and ``xi = mean(log L_(i) - log u)`` over the
+    ``k`` largest losses; the result is ``alpha = 1 / xi``. That is Hill (1975)
+    with the order-statistic threshold, i.e. exactly
+    :func:`panelary.econ.features._evt.hill_index` with a matched ``k``. Null
+    when ``k < min_exceedances``, when ``u <= 0`` (the logarithms are undefined;
+    ``hill_index`` shifts the sample instead, a documented fallback this
+    operator does not copy) or when ``xi <= 0`` (every exceedance ties ``u``).
+    """
+    q = float(q)
+    if not 0.0 < q < 1.0:
+        raise ValueError(f"xs.tail_index `q` must lie in (0, 1), got {q!r}.")
+    if tail not in _VALID_TAILS:
+        raise ValueError(
+            f"xs.tail_index tail must be one of {list(_VALID_TAILS)}, got {tail!r}."
+        )
+    if (
+        isinstance(min_exceedances, bool)
+        or not isinstance(min_exceedances, int)
+        or min_exceedances < 1
+    ):
+        raise ValueError(
+            "xs.tail_index `min_exceedances` must be an integer >= 1, got "
+            f"{min_exceedances!r}."
+        )
+    x = _as_float(expr)
+    loss = -x if tail == "lower" else x
+    n = loss.count()
+    k = (n.cast(pl.Float64) * q).floor().cast(pl.Int64)
+    # Ordinal rank, largest loss first; nulls keep a null rank. Tied losses get
+    # distinct ranks, but tied values are equal, so which of them lands on rank
+    # k + 1 cannot change u or the sum below.
+    order = loss.rank(method="ordinal", descending=True)
+    u = pl.when(order == k + 1).then(loss).max()
+    xi = pl.when(order <= k).then(loss.log() - u.log()).mean()
+    ok = (k >= min_exceedances) & (u > 0.0) & (xi > 0.0)
+    return pl.when(ok).then(1.0 / xi).otherwise(None)
+
+
+def _expr_up_share(expr: pl.Expr) -> pl.Expr:
+    """Build the cross-sectional up-share expression ``#(x > 0) / #non-null``."""
+    x = _as_float(expr)
+    n = x.count()
+    return pl.when(n > 0).then((x > 0.0).sum() / n).otherwise(None)
+
+
+def _expr_entropy(expr: pl.Expr, *, kind: str = "share") -> pl.Expr:
+    """Build the cross-sectional normalised-entropy expression.
+
+    ``"share"``: ``-sum(p log p) / log n`` with ``p_i = |x_i| / sum |x|``.
+    ``"hist"``: the Shannon entropy of a same-date Freedman-Diaconis histogram,
+    divided by ``log(n_bins)``. Both lie in ``[0, 1]``. See
+    :meth:`XSExprNamespace.entropy`.
+    """
+    if kind not in _VALID_ENTROPY:
+        raise ValueError(
+            f"xs.entropy kind must be one of {list(_VALID_ENTROPY)}, got {kind!r}."
+        )
+    x = _as_float(expr)
+    n = x.count()
+    n_f = n.cast(pl.Float64)
+    if kind == "share":
+        a = x.abs()
+        total = a.sum()
+        p = a / total
+        # 0 * log 0 = 0; a null p (a missing row) falls through to 0 as well.
+        plogp = pl.when(p > 0.0).then(p * p.log()).otherwise(0.0)
+        h = -plogp.sum()
+        return pl.when((n >= 2) & (total > 0.0)).then(h / n_f.log()).otherwise(None)
+    # Freedman-Diaconis: bin width 2 * IQR * n^(-1/3), anchored at the date min.
+    lo = x.min()
+    width = (
+        2.0
+        * (_linear_quantile(x, 0.75) - _linear_quantile(x, 0.25))
+        / n_f.pow(1.0 / 3.0)
+    )
+    n_bins = ((x.max() - lo) / width).ceil().clip(lower_bound=1.0)
+    bin_id = ((x - lo) / width).floor().clip(0.0, n_bins - 1.0)
+    # sum_k c_k log c_k over the occupied bins; entropy = log n - that / n.
+    counts = bin_id.drop_nulls().unique_counts().cast(pl.Float64)
+    h = n_f.log() - (counts * counts.log()).sum() / n_f
+    ok = (width > 0.0) & (n_bins >= 2.0)
+    return pl.when(ok).then(h / n_bins.log()).otherwise(None)
+
+
 def _as_list(x: str | Sequence[str]) -> list[str]:
     """Normalise a ``str | Sequence[str]`` to a list of names."""
     return [x] if isinstance(x, str) else list(x)
@@ -500,6 +652,124 @@ class XSExprNamespace:
             (leak-safe). Rows with a null target or factor yield null.
         """
         return _expr_neutralize(self._expr, by, add_intercept=add_intercept)
+
+    # -- cross-sectional distribution summaries (one value per cross-section) --
+
+    def dispersion(self, *, kind: str = "sd") -> pl.Expr:
+        """Cross-sectional dispersion of the value within its group.
+
+        One number per cross-section, broadcast to every row of it. NaN is
+        treated as missing; nulls are ignored.
+
+        * ``"sd"`` (default) -- sample standard deviation (``ddof=1``); null
+          with fewer than two observations.
+        * ``"mad"`` -- ``1.4826 * median(|x - median(x)|)``, the median absolute
+          deviation scaled to estimate the sd under normality; robust to a few
+          extreme names.
+        * ``"iqr"`` -- ``q75 - q25``.
+        * ``"idr"`` -- ``q90 - q10``, the interdecile range.
+
+        Quantiles use linear interpolation (numpy's default), set explicitly
+        because the Polars default is ``"nearest"``.
+
+        Parameters
+        ----------
+        kind : {"sd", "mad", "iqr", "idr"}, keyword-only, default "sd"
+            The dispersion measure.
+
+        Returns
+        -------
+        pl.Expr
+            The dispersion, Float64. Combine with ``.over(date)`` (or
+            ``.over([date, sector])`` for a within-group value). **Evaluated
+            without ``.over`` it pools every date of the frame**, so each value
+            depends on the whole future: a look-ahead.
+        """
+        return _expr_dispersion(self._expr, kind=kind)
+
+    def tail_index(
+        self, *, q: float = 0.05, tail: str = "lower", min_exceedances: int = 10
+    ) -> pl.Expr:
+        """Hill (1975) tail index ``alpha`` of one cross-section.
+
+        With losses ``L = -x`` (``tail="lower"``) or ``L = x`` (``"upper"``),
+        ``n`` the number of non-null values and ``k = floor(q * n)``, the
+        threshold ``u`` is the ``(k + 1)``-th largest loss and::
+
+            xi = mean(log L_(i) - log u)   over the k largest losses
+            alpha = 1 / xi
+
+        That is :func:`panelary.econ.features._evt.hill_index` with ``k``
+        matched, so the two agree to rounding; ``alpha`` is the Pareto tail
+        exponent (smaller means a heavier tail). The threshold is an order
+        statistic, never an interpolated quantile, which is what makes it the
+        Hill estimator exactly.
+
+        Parameters
+        ----------
+        q : float, keyword-only, default 0.05
+            Tail fraction in ``(0, 1)``: the share of the cross-section treated
+            as exceedances.
+        tail : {"lower", "upper"}, keyword-only, default "lower"
+            Which tail; ``"lower"`` (losses) is the convention for returns.
+        min_exceedances : int, keyword-only, default 10
+            Fewer exceedances than this gives null. With ``q=0.05`` a date needs
+            at least 200 names for a value.
+
+        Returns
+        -------
+        pl.Expr
+            ``alpha``, Float64; null when ``k < min_exceedances``, when the
+            threshold loss ``u`` is not positive (the logarithms are undefined),
+            or when every exceedance ties ``u``. Combine with ``.over(date)``.
+        """
+        return _expr_tail_index(
+            self._expr, q=q, tail=tail, min_exceedances=min_exceedances
+        )
+
+    def up_share(self) -> pl.Expr:
+        """Share of the cross-section that is strictly positive.
+
+        ``#(x > 0) / #non-null``: market breadth when applied to returns. A zero
+        counts as observed but not up. NaN is treated as missing.
+
+        Returns
+        -------
+        pl.Expr
+            The up-share in ``[0, 1]``, Float64; null for an empty
+            cross-section. Combine with ``.over(date)``.
+        """
+        return _expr_up_share(self._expr)
+
+    def entropy(self, *, kind: str = "share") -> pl.Expr:
+        """Normalised Shannon entropy of one cross-section, in ``[0, 1]``.
+
+        * ``"share"`` (default) -- ``-sum(p log p) / log n`` with
+          ``p_i = |x_i| / sum |x|``: how evenly the absolute moves are spread
+          across names. ``1`` means every name moved by the same amount; near
+          ``0`` means a few names carried the whole move. Null with fewer than
+          two observations or when every value is zero.
+        * ``"hist"`` -- the entropy of a same-date Freedman-Diaconis histogram
+          (bin width ``2 * IQR * n**(-1/3)``, anchored at the date minimum),
+          divided by ``log(n_bins)``: how close the cross-section is to uniform
+          over its own range. Heavy tails stretch the range over mostly empty
+          bins and pull it down. Null when the IQR is zero or there is only one
+          bin.
+
+        NaN is treated as missing. The registry name is ``xs_entropy``; the bare
+        ``entropy`` is left to per-entity (time-series) entropies.
+
+        Parameters
+        ----------
+        kind : {"share", "hist"}, keyword-only, default "share"
+            The distribution the entropy is taken over.
+
+        Returns
+        -------
+        pl.Expr
+            The normalised entropy, Float64. Combine with ``.over(date)``.
+        """
+        return _expr_entropy(self._expr, kind=kind)
 
 
 class _XSFrameNamespace:
@@ -991,6 +1261,69 @@ _SPECS: tuple[FeatureSpec, ...] = (
         safe_scope="rowwise",
         source=_SOURCE,
         license=_LICENSE,
+    ),
+    # Cross-sectional distribution summaries (plan covariance-and-market-state,
+    # section 4.4). Registered under ``xs_``-prefixed names because the registry
+    # keys by bare name and per-entity siblings (an ``entropy`` of one series,
+    # the econ ``tail_index`` family) want the short names; the *methods* are
+    # ``.xs.dispersion`` / ``.xs.tail_index`` / ``.xs.up_share`` /
+    # ``.xs.entropy``. Same scope argument as the block comment above: under
+    # ``.over(time)`` each value is a function of its own date's rows only.
+    FeatureSpec(
+        name="xs_dispersion",
+        namespace="xs",
+        input_shape="series",
+        output_shape="series",
+        params={"kind": str},
+        tier="B",
+        panel_safe=False,
+        leakage_safe=True,
+        safe_scope="rowwise",
+        source="Panelary; MAD consistency constant 1/Phi^-1(3/4)",
+        license=_LICENSE,
+        cost_hint="O(N log N) per date",
+    ),
+    FeatureSpec(
+        name="xs_tail_index",
+        namespace="xs",
+        input_shape="series",
+        output_shape="series",
+        params={"q": float, "tail": str, "min_exceedances": int},
+        tier="B",
+        panel_safe=False,
+        leakage_safe=True,
+        safe_scope="rowwise",
+        source="Hill (1975), Annals of Statistics 3(5)",
+        license=_LICENSE,
+        cost_hint="O(N log N) per date",
+    ),
+    FeatureSpec(
+        name="xs_up_share",
+        namespace="xs",
+        input_shape="series",
+        output_shape="series",
+        params={},
+        tier="B",
+        panel_safe=False,
+        leakage_safe=True,
+        safe_scope="rowwise",
+        source=_SOURCE,
+        license=_LICENSE,
+        cost_hint="O(N) per date",
+    ),
+    FeatureSpec(
+        name="xs_entropy",
+        namespace="xs",
+        input_shape="series",
+        output_shape="series",
+        params={"kind": str},
+        tier="B",
+        panel_safe=False,
+        leakage_safe=True,
+        safe_scope="rowwise",
+        source="Shannon (1948); Freedman & Diaconis (1981) bins",
+        license=_LICENSE,
+        cost_hint="O(N log N) per date",
     ),
 )
 
