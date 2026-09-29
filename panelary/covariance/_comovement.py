@@ -345,8 +345,10 @@ def _avg_corr_pooled(
     values = dense.values
     n_time = values.shape[0]
     rho = np.full(n_time, np.nan, dtype=np.float64)
-    used = np.zeros(n_time, dtype=np.int64)
-    todo = np.flatnonzero(universe.sum(axis=1) >= min_n)
+    # Size of the universe used: the qualifying names, less any the kernel
+    # drops for having no variance (overwritten below where it runs).
+    used = universe.sum(axis=1).astype(np.int64)
+    todo = np.flatnonzero(used >= min_n)
     stable: NDArray[np.bool_] | None = None
     if kind == "pollet_wilson":
         fast, stable, n_full = _pollet_wilson_fast(values, window)

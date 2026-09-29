@@ -78,28 +78,33 @@ def _nullify(values: NDArray[np.float64]) -> pl.Series:
 
 
 def _date_segments(
-    pf: Any, value: str, *, observed_only: bool = True
-) -> tuple[pl.Series, NDArray[np.float64], NDArray[np.int64], pl.DataFrame]:
+    pf: Any, value: str
+) -> tuple[pl.Series, NDArray[np.float64], NDArray[np.int64]]:
     """The panel's time axis and its finite values sorted within each date.
 
-    Returns ``(times, values, counts, frame)`` where ``values`` holds each
-    date's finite values in ascending order, dates in time order, ``counts[t]``
-    of them for date ``t`` of ``times`` (the panel's sorted unique times,
-    including dates with no finite value).
+    Returns ``(times, values, counts)``: ``times`` is the panel's sorted unique
+    times (including dates with no finite value), ``values`` holds each date's
+    finite values in ascending order with dates in time order, and
+    ``counts[t]`` is how many belong to ``times[t]``.
     """
     tim = pf.time_col
     if value not in pf.columns:
         raise ValueError(
             f"column {value!r} not found in the panel; available: {pf.columns}."
         )
-    frame = pf.lazy().select([tim, pl.col(value).cast(pl.Float64)]).collect()
+    frame = (
+        pf.lazy()
+        .select([tim, pl.col(value).cast(pl.Float64)])
+        .filter(pl.col(tim).is_not_null())
+        .collect()
+    )
     times = frame.get_column(tim).unique().sort()
     finite = frame.filter(pl.col(value).is_finite())
     t_idx = times.search_sorted(finite.get_column(tim)).cast(pl.Int64)
     ordered = pl.DataFrame({"t": t_idx, "v": finite.get_column(value)}).sort(["t", "v"])
     counts = np.bincount(ordered.get_column("t").to_numpy(), minlength=times.len())
     values = np.ascontiguousarray(ordered.get_column("v").to_numpy(), dtype=np.float64)
-    return times, values, counts.astype(np.int64), frame
+    return times, values, counts.astype(np.int64)
 
 
 # --------------------------------------------------------------------------- #
@@ -473,7 +478,7 @@ def xs_wasserstein(
     pf = coerce_panel(panel, entity, time)
     if grid is not None:
         grid = validate_int("grid", grid, minimum=1)
-    times, values, counts, _frame = _date_segments(pf, value)
+    times, values, counts = _date_segments(pf, value)
     valid = counts > 0
     if standardize:
         safe = np.maximum(counts, 1).astype(np.float64)
