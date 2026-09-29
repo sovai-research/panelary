@@ -141,6 +141,33 @@ you will get slower, approximate results with no error.
 
 ---
 
+## Unreleased: `.panel.rs_vol` is now `.panel.rolling_vol`
+
+`.panel.rs_vol` was documented as "Rogers-Satchell-style volatility". It never
+was: it is, and always has been, a trailing rolling standard deviation of a single
+column (`expr.rolling_std(window)`). The honest name is `.panel.rolling_vol`.
+
+| | Before | After |
+|---|---|---|
+| Expression | `pl.col("ret").panel.rs_vol(21)` | `pl.col("ret").panel.rolling_vol(21)` |
+| Frame | `df.panel.rs_vol("ret", window=21, over="ticker")` | `df.panel.rolling_vol("ret", window=21, over="ticker")` |
+| Real Rogers-Satchell (OHLC) | — | `pn.econ.features.range_volatility(df, entity=..., time=..., method="rogers_satchell")` |
+
+- **No number changes.** `rolling_vol` builds the identical expression, and
+  `rs_vol` still returns bitwise-identical output; it only adds a `FutureWarning`
+  (once per process).
+- **`rs_vol` is kept for at least two minor releases** and then removed. The name
+  will never be reused for the Rogers-Satchell estimator, because that would change
+  your numbers without an error.
+- Find the call sites: `grep -rn 'panel.rs_vol\|\.rs_vol(' .` and replace
+  `rs_vol` with `rolling_vol`. The registry spec `rs_vol` is now tier `D` and
+  marked as a deprecated alias.
+- If you actually wanted a range estimator, the OHLC family lives in
+  `range_volatility` (Parkinson, Garman-Klass, Rogers-Satchell, Yang-Zhang, ...);
+  see the "OHLC Volatility & Liquidity" user guide.
+
+---
+
 ## Why no shim?
 
 A forwarding `polars_features` package that re-exported `panelary` would be cheap

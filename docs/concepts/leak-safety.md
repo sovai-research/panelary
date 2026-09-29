@@ -238,7 +238,7 @@ form is the guard-railed default that cannot be called wrong.
 Every `.panel` operator is a **causal kernel**: the value at row `t` is a function
 of `x[t], x[t-1], …` only. `zscore` uses a trailing rolling mean/std; `frac_diff`
 is a fixed-width convolution of lagged terms with leading rows set to `null` until
-the window fills; `rs_vol` is a trailing standard deviation. None of them can see
+the window fills; `rolling_vol` is a trailing standard deviation. None of them can see
 a future row, so `leakage_safe=True` holds regardless of how you group.
 
 Cross-sectional `.xs` operators are causal for free: they only ever touch one

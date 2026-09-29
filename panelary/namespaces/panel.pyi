@@ -14,6 +14,7 @@ for the stubs to be discovered.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import polars as pl
@@ -31,6 +32,7 @@ class PanelExprNamespace:
     def __init__(self, expr: pl.Expr) -> None: ...
     def frac_diff(self, d: float, *, threshold: float = ...) -> pl.Expr: ...
     def zscore(self, window: int) -> pl.Expr: ...
+    def rolling_vol(self, window: int) -> pl.Expr: ...
     def rs_vol(self, window: int) -> pl.Expr: ...
 
 class PanelLazyFrameNamespace:
@@ -51,6 +53,15 @@ class PanelLazyFrameNamespace:
         window: int,
         over: str | None = ...,
         alias: str | None = ...,
+    ) -> pl.LazyFrame: ...
+    def rolling_vol(
+        self,
+        columns: str | Sequence[str],
+        *,
+        window: int,
+        over: str | None = ...,
+        alias: str | None = ...,
+        suffix: str | None = ...,
     ) -> pl.LazyFrame: ...
     def rs_vol(
         self,
@@ -100,6 +111,15 @@ class PanelDataFrameNamespace:
         window: int,
         over: str | None = ...,
         alias: str | None = ...,
+    ) -> pl.DataFrame: ...
+    def rolling_vol(
+        self,
+        columns: str | Sequence[str],
+        *,
+        window: int,
+        over: str | None = ...,
+        alias: str | None = ...,
+        suffix: str | None = ...,
     ) -> pl.DataFrame: ...
     def rs_vol(
         self,

@@ -48,7 +48,7 @@ print(panel.collect().shape)       # (120, 4)
 Panelary registers two Polars expression namespaces:
 
 - **`.panel`** — *within-entity, causal* transforms (use `.over(entity)`): `frac_diff`,
-  `zscore` (trailing rolling), `rs_vol`.
+  `zscore` (trailing rolling), `rolling_vol` (trailing rolling standard deviation).
 - **`.xs`** — *cross-sectional* transforms (use `.over(time)`): `rank`, `demean`, `zscore`,
   `winsorize`, `quantile_bin`, `neutralize`.
 

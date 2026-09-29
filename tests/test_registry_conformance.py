@@ -72,6 +72,7 @@ import pytest
 
 import panelary  # noqa: F401  -- registers the ts / xs / panel / factor specs
 from panelary.core.panel_frame import PanelFrame
+from panelary.econ import features as _econ_features
 from panelary.factor import forward_return as _factor_forward_return
 from panelary.factor import orthogonalize as _factor_orthogonalize
 from panelary.registry import (
@@ -197,6 +198,7 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "frac_diff": ((0.4,), {}),
     "zscore": ((), {"window": 5}),
     "rs_vol": ((), {"window": 5}),
+    "rolling_vol": ((), {"window": 5}),
     "winsorize": ((0.1,), {}),
     "quantile_bin": ((), {"q": 3}),
     "neutralize": ((AUX,), {}),
@@ -224,6 +226,83 @@ _FRAME_OPS: dict[str, Callable[[Any], Any]] = {
     "orthogonalize": _orthogonalize_op,
     "forward_return": _forward_return_op,
 }
+
+#: How :func:`_call` renders a frame op that is not a ``panelary.factor`` one.
+_FRAME_OP_RENDERINGS: dict[str, str] = {}
+
+
+# --------------------------------------------------------------------------- #
+# The `econ` namespace: OHLC and liquidity frame functions
+# --------------------------------------------------------------------------- #
+def _ohlc_probe(frame: pl.DataFrame) -> pl.DataFrame:
+    """Positive OHLC bars built *causally* from the probe columns ``x``, ``z``.
+
+    ``close = 100 exp(x / 20)``; ``open`` = the previous close times
+    ``exp(z / 100)`` (the bar's own close on an entity's first row);
+    ``high = max(O, C) exp(|z| / 50)``; ``low = min(O, C) exp(-|x| / 60)``. The
+    interior null of ``x`` becomes a missing close. Two special bars exercise
+    the estimators' edge cases: a zero-range bar (``O = H = L = C``, entity A,
+    t = 7) and a bar pinned at the previous close (``H = L = C_{t-1}``, EDGE's
+    ``tau = 0``; entity B, t = 9). A perturbed future row becomes an infinite
+    or zero price there, i.e. an invalid bar, which the default policy drops.
+    """
+    close = 100.0 * (pl.col(VALUE) / 20.0).exp()
+    prev = close.shift(1).over(ENTITY)
+    out = frame.with_columns(close.alias("close"), prev.alias("__prev"))
+    open_ = pl.coalesce(pl.col("__prev"), pl.col("close")) * (pl.col(AUX) / 100.0).exp()
+    out = out.with_columns(open_.alias("open"))
+    out = out.with_columns(
+        (pl.max_horizontal("open", "close") * (pl.col(AUX).abs() / 50.0).exp()).alias(
+            "high"
+        ),
+        (
+            pl.min_horizontal("open", "close") * (-pl.col(VALUE).abs() / 60.0).exp()
+        ).alias("low"),
+    )
+    flat = (pl.col(ENTITY) == "A") & (pl.col(TIME) == 7)
+    pinned = (pl.col(ENTITY) == "B") & (pl.col(TIME) == 9)
+    return out.with_columns(
+        pl.when(flat)
+        .then(pl.col("close"))
+        .when(pinned)
+        .then(pl.col("__prev"))
+        .otherwise(pl.col(c))
+        .alias(c)
+        for c in ("open", "high", "low", "close")
+    ).drop("__prev")
+
+
+def _range_volatility_op(frame: Any) -> Any:
+    """Every ``range_volatility`` method (and the discreteness / annualisation
+    paths) on the OHLC probe, with a partial-window ``min_periods``."""
+    out = _ohlc_probe(frame)
+    for method in (
+        "yang_zhang",
+        "gk_overnight",
+        "rogers_satchell",
+        "garman_klass",
+        "parkinson",
+        "close_to_close",
+    ):
+        out = _econ_features.range_volatility(
+            out, entity=ENTITY, time=TIME, method=method, window=5, min_periods=3
+        )
+    return _econ_features.range_volatility(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        window=4,
+        discrete_bars=78,
+        periods_per_year=252.0,
+        alias="yz_corrected",
+    )
+
+
+_FRAME_OPS["range_volatility"] = _range_volatility_op
+_FRAME_OP_RENDERINGS["range_volatility"] = (
+    "panelary.econ.features.range_volatility(<OHLC probe>, method=<each of 6>, "
+    "window=5, min_periods=3)"
+)
 
 
 def _shape_op(factory: Callable[[], Any]) -> Callable[[Any], Any]:
@@ -437,6 +516,8 @@ def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
+    if spec.name in _FRAME_OP_RENDERINGS:
+        return _FRAME_OP_RENDERINGS[spec.name]
     if spec.name in _FRAME_OPS:
         return f"panelary.factor.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":

@@ -38,6 +38,13 @@ Liquidity (:mod:`._liquidity`)
     :func:`amihud_illiquidity`, :func:`roll_spread`, :func:`amivest_liquidity`
     and the combined :func:`liquidity_features`.
 
+OHLC volatility (:mod:`._range`)
+    :func:`range_volatility` -- Parkinson, Garman-Klass, Rogers-Satchell,
+    Garman-Klass with overnight, Yang-Zhang and close-to-close volatility from
+    open/high/low/close bars, with an optional discrete-monitoring correction;
+    :func:`ohlc_variance_terms` exposes the per-bar terms for custom (e.g.
+    EWMA) aggregation.
+
 Tails (:mod:`._evt`)
     :func:`hill_index`, :func:`gpd_fit`, :func:`pot_var_es` and
     :func:`evt_features` -- trailing-window EVT VaR / expected shortfall.
@@ -200,3 +207,18 @@ __all__ = [
     "per_entity_apply",
     "per_entity_reduce",
 ]
+
+# --- OHLC volatility, spreads and low-frequency liquidity (plan 5, M1-M3) ----
+# One self-contained block (imports, __all__, registry registration) so it merges
+# independently of the realized-measure block.
+from panelary.econ.features._range import _SPECS as _RANGE_SPECS
+from panelary.econ.features._range import ohlc_variance_terms, range_volatility
+from panelary.registry import registry as _registry
+
+__all__ += [
+    "range_volatility",
+    "ohlc_variance_terms",
+]
+for _spec in (*_RANGE_SPECS,):
+    _registry.register(_spec)
+del _spec
