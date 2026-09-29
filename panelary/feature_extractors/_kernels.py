@@ -18,7 +18,7 @@ try:  # polars>=1.0 moved type aliases to the private `_typing` module
 except ImportError:  # pragma: no cover - older polars
     from polars.type_aliases import ClosedInterval  # noqa: F401
 
-from panelary._internal._deps import have
+from panelary._internal._jit import lazy_njit
 
 
 def ricker(points: int, a: float) -> np.ndarray:
@@ -153,94 +153,85 @@ def _cusum_events_py(
     return events
 
 
-_cusum_events_numba = None
+# error_model="numpy" (fixed by `_internal._jit`) is load-bearing, not a tuning
+# knob: numba's default ("python") RAISES ZeroDivisionError on float division by
+# zero, while the pure-Python path relies on numpy IEEE semantics (inf/nan) to
+# reproduce the original Rust f64 behaviour exactly. Without it the `fast` extra
+# silently changes results on a constant warmup window (sigma == 0), which is the
+# divergence tests/test_cusum_pure.py::test_numba_matches_python detects.
+@lazy_njit
+def _cusum_events_kernel(
+    values: np.ndarray, threshold: float, warmup_period: int, drift: float
+) -> np.ndarray:  # pragma: no cover - exercised only when numba installed
+    n = values.shape[0]
+    events = np.zeros(n, dtype=np.int32)
+
+    s_pos = 0.0
+    s_neg = 0.0
+    t = 0
+    mu = 0.0
+    sigma = 0.0
+    obs = np.empty(n, dtype=np.float64)
+    obs_count = 0
+
+    for i in range(n):
+        value = values[i]
+        is_null = np.isnan(value)
+        warming_up = t < warmup_period
+        warmup_end = t == warmup_period
+
+        if warming_up:
+            if not is_null:
+                obs[obs_count] = value
+                obs_count += 1
+            events[i] = 0
+            t += 1
+            continue
+
+        if warmup_end:
+            # Two-pass population mean/std, summed left-to-right to match Rust.
+            total = 0.0
+            for j in range(obs_count):
+                total += obs[j]
+            mu = total / obs_count
+            sq = 0.0
+            for j in range(obs_count):
+                sq += (obs[j] - mu) ** 2
+            sigma = math.sqrt(sq / obs_count)
+            t += 1
+
+        if not is_null:
+            v = (value - mu) / sigma  # IEEE division (inf/nan on /0), matches Rust
+            s_pos = max(s_pos + v - drift, 0.0)
+            s_neg = min(s_neg + v + drift, 0.0)
+            if s_pos > threshold:
+                events[i] = 1
+                s_pos = 0.0
+                s_neg = 0.0
+                t = 0
+                obs_count = 0
+            elif s_neg < -threshold:
+                events[i] = 1
+                s_neg = 0.0
+                s_pos = 0.0
+                t = 0
+                obs_count = 0
+            else:
+                events[i] = 0
+        else:
+            events[i] = 0
+
+    return events
 
 
 def _get_cusum_numba() -> Callable[[np.ndarray, float, int, float], np.ndarray] | None:
     """Return a numba-compiled CUSUM kernel if ``numba`` is installed, else None.
 
     numba is the optional ``fast`` extra; it must never be imported eagerly or
-    become a hard dependency. Compilation is deferred to first use and cached.
+    become a hard dependency. Compilation is deferred to first use and cached
+    (see :mod:`panelary._internal._jit`).
     """
-    global _cusum_events_numba
-    if _cusum_events_numba is not None:
-        return _cusum_events_numba
-    if not have("numba"):
-        return None
-    import numba  # noqa: PLC0415  (lazy, optional-extra import)
-
-    # error_model="numpy" is load-bearing, not a tuning knob: numba's default
-    # ("python") RAISES ZeroDivisionError on float division by zero, while the
-    # pure-Python path relies on numpy IEEE semantics (inf/nan) to reproduce the
-    # original Rust f64 behaviour exactly. Without it the `fast` extra silently
-    # changes results on a constant warmup window (sigma == 0), which is the
-    # divergence tests/test_cusum_pure.py::test_numba_matches_python detects.
-    @numba.njit(cache=True, error_model="numpy")
-    def _kernel(
-        values: np.ndarray, threshold: float, warmup_period: int, drift: float
-    ) -> np.ndarray:  # pragma: no cover - exercised only when numba installed
-        n = values.shape[0]
-        events = np.zeros(n, dtype=np.int32)
-
-        s_pos = 0.0
-        s_neg = 0.0
-        t = 0
-        mu = 0.0
-        sigma = 0.0
-        obs = np.empty(n, dtype=np.float64)
-        obs_count = 0
-
-        for i in range(n):
-            value = values[i]
-            is_null = np.isnan(value)
-            warming_up = t < warmup_period
-            warmup_end = t == warmup_period
-
-            if warming_up:
-                if not is_null:
-                    obs[obs_count] = value
-                    obs_count += 1
-                events[i] = 0
-                t += 1
-                continue
-
-            if warmup_end:
-                # Two-pass population mean/std, summed left-to-right to match Rust.
-                total = 0.0
-                for j in range(obs_count):
-                    total += obs[j]
-                mu = total / obs_count
-                sq = 0.0
-                for j in range(obs_count):
-                    sq += (obs[j] - mu) ** 2
-                sigma = math.sqrt(sq / obs_count)
-                t += 1
-
-            if not is_null:
-                v = (value - mu) / sigma  # IEEE division (inf/nan on /0), matches Rust
-                s_pos = max(s_pos + v - drift, 0.0)
-                s_neg = min(s_neg + v + drift, 0.0)
-                if s_pos > threshold:
-                    events[i] = 1
-                    s_pos = 0.0
-                    s_neg = 0.0
-                    t = 0
-                    obs_count = 0
-                elif s_neg < -threshold:
-                    events[i] = 1
-                    s_neg = 0.0
-                    s_pos = 0.0
-                    t = 0
-                    obs_count = 0
-                else:
-                    events[i] = 0
-            else:
-                events[i] = 0
-
-        return events
-
-    _cusum_events_numba = _kernel
-    return _kernel
+    return _cusum_events_kernel.compiled()
 
 
 def _cusum_events(

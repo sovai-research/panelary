@@ -21,12 +21,21 @@ on top of it invariant to appended future rows.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import numpy as np
 import polars as pl
+
+from panelary._internal._special import (
+    norm_cdf as norm_cdf,
+)
+from panelary._internal._special import (
+    norm_ppf as norm_ppf,
+)
+from panelary._internal._special import (
+    norm_sf as norm_sf,
+)
 
 __all__ = [
     "OLSResult",
@@ -52,95 +61,8 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 # Normal distribution (scipy-free)
 # --------------------------------------------------------------------------- #
-_ERFC = np.frompyfunc(math.erfc, 1, 1)
-
-# Acklam's rational approximation to the inverse normal CDF (|eps| < 1.15e-9),
-# refined by one Halley step against `norm_cdf` for full double precision.
-_A = (
-    -3.969683028665376e01,
-    2.209460984245205e02,
-    -2.759285104469687e02,
-    1.383577518672690e02,
-    -3.066479806614716e01,
-    2.506628277459239e00,
-)
-_B = (
-    -5.447609879822406e01,
-    1.615858368580409e02,
-    -1.556989798598866e02,
-    6.680131188771972e01,
-    -1.328068155288572e01,
-)
-_C = (
-    -7.784894002430293e-03,
-    -3.223964580411365e-01,
-    -2.400758277161838e00,
-    -2.549732539343734e00,
-    4.374664141464968e00,
-    2.938163982698783e00,
-)
-_D = (
-    7.784695709041462e-03,
-    3.224671290700398e-01,
-    2.445134137142996e00,
-    3.754408661907416e00,
-)
-_P_LOW = 0.02425
-
-
-def norm_cdf(x: np.ndarray | float) -> np.ndarray | float:
-    """Standard-normal CDF, evaluated exactly via ``erfc`` (no scipy)."""
-    arr = np.asarray(x, dtype=float)
-    out = 0.5 * np.asarray(_ERFC(-arr / math.sqrt(2.0)), dtype=float)
-    return float(out) if out.ndim == 0 else out
-
-
-def norm_sf(x: np.ndarray | float) -> np.ndarray | float:
-    """Standard-normal survival function ``1 - Phi(x)``."""
-    arr = np.asarray(x, dtype=float)
-    out = 0.5 * np.asarray(_ERFC(arr / math.sqrt(2.0)), dtype=float)
-    return float(out) if out.ndim == 0 else out
-
-
-def _norm_ppf_scalar(p: float) -> float:
-    if not (0.0 < p < 1.0):
-        if p == 0.0:
-            return -np.inf
-        if p == 1.0:
-            return np.inf
-        return float("nan")
-    if p < _P_LOW:
-        q = math.sqrt(-2.0 * math.log(p))
-        x = (
-            ((((_C[0] * q + _C[1]) * q + _C[2]) * q + _C[3]) * q + _C[4]) * q + _C[5]
-        ) / ((((_D[0] * q + _D[1]) * q + _D[2]) * q + _D[3]) * q + 1.0)
-    elif p <= 1.0 - _P_LOW:
-        q = p - 0.5
-        r = q * q
-        x = (
-            (((((_A[0] * r + _A[1]) * r + _A[2]) * r + _A[3]) * r + _A[4]) * r + _A[5])
-            * q
-            / (((((_B[0] * r + _B[1]) * r + _B[2]) * r + _B[3]) * r + _B[4]) * r + 1.0)
-        )
-    else:
-        q = math.sqrt(-2.0 * math.log(1.0 - p))
-        x = -(
-            ((((_C[0] * q + _C[1]) * q + _C[2]) * q + _C[3]) * q + _C[4]) * q + _C[5]
-        ) / ((((_D[0] * q + _D[1]) * q + _D[2]) * q + _D[3]) * q + 1.0)
-    # One Halley refinement step.
-    e = 0.5 * math.erfc(-x / math.sqrt(2.0)) - p
-    u = e * math.sqrt(2.0 * math.pi) * math.exp(x * x / 2.0)
-    return float(x - u / (1.0 + x * u / 2.0))
-
-
-_NORM_PPF = np.frompyfunc(_norm_ppf_scalar, 1, 1)
-
-
-def norm_ppf(p: np.ndarray | float) -> np.ndarray | float:
-    """Standard-normal quantile function (inverse CDF), scipy-free."""
-    arr = np.asarray(p, dtype=float)
-    out = np.asarray(_NORM_PPF(arr), dtype=float)
-    return float(out) if out.ndim == 0 else out
+# norm_cdf / norm_sf / norm_ppf live in `panelary._internal._special`
+# (imported above and re-exported here for existing callers).
 
 
 # --------------------------------------------------------------------------- #

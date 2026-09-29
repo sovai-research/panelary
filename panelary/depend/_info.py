@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from panelary._internal._special import psi
 from panelary.depend._ranks import normal_scores, ranks
 from panelary.econ._common import chi2_sf, ols
 
@@ -51,44 +52,6 @@ __all__ = [
 ]
 
 _EULER_GAMMA = 0.5772156649015329
-
-
-def psi(x: float | np.ndarray) -> float | np.ndarray:
-    """Digamma function ``psi(x) = d/dx log Gamma(x)`` for ``x > 0``.
-
-    Upward recurrence ``psi(x) = psi(x + 1) - 1/x`` to ``x >= 10``, then the
-    asymptotic Bernoulli series to ``x^-10`` (truncation error < 1e-13).
-    Checked against ``psi(1) = -gamma`` and ``psi(1/2) = -gamma - 2 ln 2``.
-
-    Parameters
-    ----------
-    x : float or ndarray
-        Positive argument(s); non-positive values return ``nan``.
-
-    Returns
-    -------
-    float or ndarray
-    """
-    arr = np.asarray(x, dtype=np.float64)
-    xx = np.atleast_1d(arr).astype(np.float64).copy()
-    bad = ~(xx > 0)
-    xx[bad] = 1.0
-    acc = np.zeros_like(xx)
-    small = xx < 10.0
-    while small.any():
-        acc[small] -= 1.0 / xx[small]
-        xx[small] += 1.0
-        small = xx < 10.0
-    f = 1.0 / (xx * xx)
-    series = f * (
-        1.0 / 12.0
-        - f * (1.0 / 120.0 - f * (1.0 / 252.0 - f * (1.0 / 240.0 - f / 132.0)))
-    )
-    out = acc + np.log(xx) - 0.5 / xx - series
-    out[bad] = np.nan
-    if arr.ndim == 0:
-        return float(out[0])
-    return out.reshape(arr.shape)
 
 
 def _logdet_bias(d: int, n: int) -> float:

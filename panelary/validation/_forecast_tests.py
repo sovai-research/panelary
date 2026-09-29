@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import polars as pl
 
+from panelary._internal import _special
 from panelary.core.model_selection import _norm_cdf
 from panelary.validation._bootstrap import block_bootstrap_indices
 
@@ -69,69 +70,11 @@ def _norm_pdf(x: float | np.ndarray) -> np.ndarray:
     return np.exp(-0.5 * np.asarray(x, dtype=float) ** 2) / _SQRT_2PI
 
 
-def _betacf(a: float, b: float, x: float) -> float:
-    """Continued fraction for the incomplete beta function (Lentz's method)."""
-    tiny = 1e-300
-    qab, qap, qam = a + b, a + 1.0, a - 1.0
-    c = 1.0
-    d = 1.0 - qab * x / qap
-    if abs(d) < tiny:
-        d = tiny
-    d = 1.0 / d
-    h = d
-    for m in range(1, 301):
-        m2 = 2 * m
-        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
-        d = 1.0 + aa * d
-        if abs(d) < tiny:
-            d = tiny
-        c = 1.0 + aa / c
-        if abs(c) < tiny:
-            c = tiny
-        d = 1.0 / d
-        h *= d * c
-        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
-        d = 1.0 + aa * d
-        if abs(d) < tiny:
-            d = tiny
-        c = 1.0 + aa / c
-        if abs(c) < tiny:
-            c = tiny
-        d = 1.0 / d
-        delta = d * c
-        h *= delta
-        if abs(delta - 1.0) < 3e-16:
-            break
-    return h
-
-
-def _betainc(a: float, b: float, x: float) -> float:
-    """Regularized incomplete beta ``I_x(a, b)``."""
-    if x <= 0.0:
-        return 0.0
-    if x >= 1.0:
-        return 1.0
-    lbeta = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
-    front = math.exp(lbeta + a * math.log(x) + b * math.log1p(-x))
-    if x < (a + 1.0) / (a + b + 2.0):
-        return front * _betacf(a, b, x) / a
-    return (
-        1.0
-        - math.exp(lbeta + b * math.log1p(-x) + a * math.log(x))
-        * _betacf(b, a, 1.0 - x)
-        / b
-    )
-
-
-def _t_sf(t: float, df: float) -> float:
-    """Upper-tail probability ``P(T > t)`` for a Student-t with ``df`` d.o.f."""
-    if df <= 0:
-        raise ValueError(f"`df` must be positive, got {df}.")
-    if not math.isfinite(t):
-        return 0.0 if t > 0 else 1.0
-    x = df / (df + t * t)
-    tail = 0.5 * _betainc(0.5 * df, 0.5, x)
-    return tail if t > 0 else 1.0 - tail
+# The incomplete beta and Student-t tail live in `panelary._internal._special`;
+# the private names below are kept for existing importers.
+_betacf = _special._betacf
+_betainc = _special._betainc_scalar
+_t_sf = _special._t_sf_scalar
 
 
 # --------------------------------------------------------------------------- #
