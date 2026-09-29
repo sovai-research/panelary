@@ -10,8 +10,8 @@ no detector at all, because it back-tests beautifully and trades catastrophicall
    window rule of the form ``min_window = f(T)``, a critical value indexed by
    the caller's own sample size, and full-sample lag selection. With the window
    rule frozen the measured deviation is exactly ``0.0``; with the
-   conventional ``floor(T*(0.01 + 1.8/sqrt(T)))`` rule it is mean 0.160 /
-   max 1.576, revising 46% of the dates in the series.
+   conventional ``floor(T*(0.01 + 1.8/sqrt(T)))`` rule it is mean 0.123 /
+   max 2.515, revising 41.2% of the dates in the series.
 2. **Future poison** -- overwrite everything after ``t`` with noise, then NaN,
    then a huge constant; the value at ``t`` must be bit-identical. Strictly
    stronger than (1): (1) can be satisfied by an implementation that reads a

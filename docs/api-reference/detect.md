@@ -60,7 +60,7 @@ SSR = s − 2β̂'b + β̂'Aβ̂ = s − β̂'b        (exact, because Aβ̂ = b
 
 The fastest published kernel still forms residuals in full inside its inner
 loop and is therefore `O(T³)`, not `O(T²)`. Measured here: `T = 1000`
-exhaustive — all 452,676 windows — in **~0.02 s of pure NumPy**, against 0.78 s
+exhaustive — all 452,676 windows — in **~0.012 s of pure NumPy**, against 0.78 s
 for that reference implementation in C++.
 
 ## Calibration without leakage
@@ -110,8 +110,9 @@ measures how violent the worst few names are; breadth measures how many are
 involved.
 
 `residualise` is not optional. With equicorrelated shocks and **no bubble
-anywhere**, the 95th percentile of sup-over-`t` breadth runs `0.030` at `ρ = 0`,
-`0.347` at `ρ = 0.6` and `0.830` at `ρ = 0.9` — the effective sample size is
+anywhere** (`N = 200`, `T = 300`, family-wise entity threshold), the 95th
+percentile of sup-over-`t` breadth runs `0.010` at `ρ = 0`, `0.096` at `ρ = 0.6`
+and `0.251` at `ρ = 0.9` — the effective sample size is
 roughly `1/ρ`, not `N`. Projecting out backward-looking factors with betas
 frozen at `t` restores it to the `ρ = 0` level at every `ρ` tested.
 
