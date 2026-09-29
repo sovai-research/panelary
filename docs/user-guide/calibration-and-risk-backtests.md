@@ -9,6 +9,7 @@ a strategy:
 | Does one forecast beat another for *every* consistent score? | `murphy_diagram` |
 | Is this VaR / ES forecast calibrated, with exact small-sample nulls? | `var_backtest`, `kupiec_test`, `christoffersen_test`, `dynamic_quantile_test`, `acerbi_szekely_test` |
 | Which risk forecast is better? | `fz0_loss` (VaR+ES), `qlike_loss` (variance), fed to `diebold_mariano` / `model_confidence_set` |
+| Score a *multivariate* ensemble forecast | `energy_score`, `variogram_score` |
 
 Everything here is numpy + polars. The PAV kernel behind CORP has an optional numba
 twin (the `fast` extra) that returns bitwise-identical results. Every test returns an
@@ -179,10 +180,34 @@ backtesting.
 p-values to `benjamini_yekutieli`, which is valid under the arbitrary cross-sectional
 dependence of a panel.
 
+## Multivariate proper scores
+
+For ensemble forecasts of a vector (a basket's returns, a term structure, several
+entities at once), `y` has shape `(T, d)` and `samples` has shape `(T, m, d)`. Both
+scores return one value per observation, so the per-period scores of two forecasters
+feed `diebold_mariano` directly.
+
+- `energy_score` is the multivariate CRPS: `E‖X − y‖ − ½ E‖X − X′‖`. `method="exact"`
+  computes every pairwise distance through the Gram matrix after centring each ensemble,
+  chunked so that no `(m, m, d)` array is ever built. `fair=True` is Ferro's fair
+  version, unbiased for the distribution the ensemble was drawn from, so it compares
+  ensembles of different sizes. `method="sliced"` averages exact 1-D CRPS values over
+  random directions: an unbiased Monte Carlo approximation, flagged with a warning. For
+  `d = 1` every method is exactly `crps_ensemble`.
+- `variogram_score` compares the observed pairwise variogram `|y_i − y_j|^p` with the
+  ensemble's expected one. The energy score is known to be weak at detecting a wrong
+  *dependence* structure. In the test suite an ensemble with the right marginals but
+  independent components, scored against correlated outcomes (ρ = 0.6), raises the
+  variogram score by more than 5× the relative amount it raises the energy score. Report
+  both. The optional numba kernel fuses the ensemble mean and matches the numpy path
+  bitwise.
+
 ## Performance (measured)
 
 Apple Silicon, Python 3.13, NumPy 2.5, polars 1.44, numba 0.67, single process. The
-machine was shared with other jobs, so these are upper bounds.
+machine was shared with other jobs (load average up to about 90 during the
+multivariate-score runs), so these are upper bounds. The rows that miss their budget
+missed it under that load.
 
 | Operation | Size | Measured | Plan budget |
 | --- | --- | --- | --- |
@@ -198,11 +223,16 @@ machine was shared with other jobs, so these are upper bounds.
 | same, MC null | M = 10, T = 1000, B = 999 | 0.36 s | — |
 | `acerbi_szekely_test`, Z2 MC | M = 100, T = 1000, B = 2000 | 1.4 s | ≤ 3 s |
 | `var_backtest` (all four tests) | M = 10, T = 1000 | 0.79 s | — |
+| `energy_score`, exact | m = 1000, d = 50 | 2.7 ms/obs | ≤ 2.5 ms/obs |
+| `energy_score`, sliced (K = 128) | m = 1000, d = 50 | 2.3 ms/obs | — |
+| `variogram_score`, numba | m = 1000, d = 50 | 0.77 ms/obs | ≤ 2.5 ms/obs |
+| same | numpy twin | 2.9 ms/obs | ≤ 2.5 ms/obs |
 
 ## References
 
 - Acerbi, C. & Székely, B. (2014). Back-testing expected shortfall. *Risk* 27(11), 76–81.
 - Christoffersen, P. F. (1998). Evaluating interval forecasts. *IER* 39(4), 841–862.
+- Ferro, C. A. T. (2014). Fair scores for ensemble forecasts. *QJRMS* 140, 1917–1923.
 - Dimitriadis, T., Gneiting, T. & Jordan, A. I. (2021). Stable reliability diagrams for
   probabilistic classifiers. *PNAS* 118(8), e2016191118.
 - Dufour, J.-M. (2006). Monte Carlo tests with nuisance parameters. *J. Econometrics*
@@ -211,6 +241,8 @@ machine was shared with other jobs, so these are upper bounds.
   consistent scoring functions, Choquet representations and forecast rankings. *JRSS-B*
   78(3), 505–562.
 - Engle, R. F. & Manganelli, S. (2004). CAViaR. *JBES* 22(4), 367–381.
+- Gneiting, T. & Raftery, A. E. (2007). Strictly proper scoring rules, prediction, and
+  estimation. *JASA* 102(477), 359–378.
 - Gneiting, T. & Resin, J. (2023). Regression diagnostics meets forecast evaluation.
   *Electron. J. Statist.* 17, 3226–3286.
 - Kupiec, P. (1995). Techniques for verifying the accuracy of risk measurement models.
@@ -219,3 +251,7 @@ machine was shared with other jobs, so these are upper bounds.
   *J. Econometrics* 160(1), 246–256.
 - Patton, A. J., Ziegel, J. F. & Chen, R. (2019). Dynamic semiparametric models for
   expected shortfall (and Value-at-Risk). *J. Econometrics* 211(2), 388–413.
+- Pinson, P. & Tastu, J. (2013). Discrimination ability of the energy score. DTU
+  technical report.
+- Scheuerer, M. & Hamill, T. M. (2015). Variogram-based proper scoring rules for
+  probabilistic forecasts of multivariate quantities. *MWR* 143(4), 1321–1334.
