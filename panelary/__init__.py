@@ -183,6 +183,12 @@ except ImportError as exc:
     _warn_unavailable("panelary.weights", exc)
 else:
     __all__ += ["weights"]
+try:
+    from panelary import sample as sample
+except ImportError as exc:
+    _warn_unavailable("panelary.sample", exc)
+else:
+    __all__ += ["sample"]
 # --- [/label-spans] ------------------------------------------------------------
 
 # --- Models & feature selection subpackages ---------------------------------
