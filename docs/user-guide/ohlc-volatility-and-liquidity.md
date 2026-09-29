@@ -306,9 +306,9 @@ with other jobs — load average ≈ 14 — so treat these as upper bounds):
 
 | Workload | Measured | Budget (plan §11) |
 | --- | ---: | ---: |
-| Parkinson + GK + RS, w = 21 (three calls) | 3.2 s under load; 1.7 s idle | ≤ 2.5 s (fail at 5 s) |
-| Yang–Zhang, w = 21 | 1.4 s | ≤ 3 s |
-| close-to-close, w = 21 | 0.6 s | — |
+| Parkinson + GK + RS, w = 21 (three calls) | 2.3–3.2 s under load; 1.7 s lightly loaded | ≤ 2.5 s (fail at 5 s) |
+| Yang–Zhang, w = 21 | 1.4–2.1 s | ≤ 3 s |
+| close-to-close, w = 21 | 0.6–1.1 s | — |
 | EDGE, w = 21, batched 256 | 4.0 s (5.6 s under heavier load); peak RSS 5.7 GB for the whole process, input included | ≤ 12 s, ≤ 6 GB |
 | EDGE, w = 21, unbatched | 7.9 s; peak RSS 11.9 GB | — |
 | Corwin–Schultz, w = 21 | 2.1 s | ≤ 3 s (target) |
