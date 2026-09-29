@@ -357,8 +357,23 @@ def _codes(values: np.ndarray) -> tuple[np.ndarray, int]:
 
 def _prepare_1d(
     feature: Any, target: Any, by_time: Any
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Sort a flat ``(feature, target, time)`` triple into date-contiguous order."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Sort a flat ``(feature, target, time)`` triple into date-contiguous order.
+
+    Rows with a non-finite target are dropped, and the date groups are built
+    from the rows that remain, so every group is non-empty. That matters:
+    ``np.add.reduceat`` raises ``IndexError`` on a trailing empty group and
+    returns a neighbouring row (not zero) for an interior one. A forward label
+    is null on its last ``horizon`` dates, so trailing empty dates are the
+    normal case for a held-out window, not an edge case.
+
+    Returns
+    -------
+    (feature, target, starts, present, n_times)
+        ``starts`` delimits the non-empty date groups; ``present[g]`` is the
+        position of group ``g`` among all ``n_times`` distinct dates of
+        ``by_time``.
+    """
     f = np.asarray(
         feature.to_numpy() if isinstance(feature, pl.Series) else feature,
         dtype=np.float64,
@@ -374,11 +389,11 @@ def _prepare_1d(
         )
     codes, n_times = _codes(t)
     order = np.argsort(codes, kind="stable")
+    order = order[np.isfinite(y[order])]
     codes = codes[order]
-    keep = np.isfinite(y[order])
-    codes = codes[keep]
-    starts = _group_starts(codes, n_times)
-    return f[order][keep], y[order][keep], starts
+    present = np.unique(codes)
+    starts = _group_starts(np.searchsorted(present, codes), present.shape[0])
+    return f[order], y[order], starts, present, n_times
 
 
 # --------------------------------------------------------------------------- #
@@ -401,15 +416,21 @@ def rank_ic_series(
     Returns
     -------
     ndarray of float64, shape (n_dates,)
-        NaN for dates with a constant signal or fewer than
+        One entry per distinct value of ``by_time``, in sorted order. NaN for
+        dates with no finite target, a constant signal, or fewer than
         :data:`MIN_CROSS_SECTION` usable observations.
     """
-    f, y, starts = _prepare_1d(feature, fwd_ret, by_time)
+    f, y, starts, present, n_times = _prepare_1d(feature, fwd_ret, by_time)
+    out = np.full(n_times, np.nan, dtype=np.float64)
+    if present.shape[0] == 0:
+        return out
     xf = _transform_columns(f.reshape(-1, 1), starts, metric)
     xy = _transform_target(y, starts, metric)
     zf, counts = _standardize_by_date(xf, starts)
     zy, ycounts = _standardize_by_date(xy, starts)
-    return _per_date_ic(zf, zy[:, 0], starts, np.minimum(counts, ycounts))[:, 0]
+    ic = _per_date_ic(zf, zy[:, 0], starts, np.minimum(counts, ycounts))[:, 0]
+    out[present] = ic
+    return out
 
 
 def rank_ic(
@@ -561,7 +582,9 @@ def decile_monotonicity(
     """
     if n_bins < 2:
         raise ValueError(f"`n_bins` must be >= 2, got {n_bins}.")
-    f, y, starts = _prepare_1d(feature, fwd_ret, by_time)
+    f, y, starts, present, _ = _prepare_1d(feature, fwd_ret, by_time)
+    if present.shape[0] == 0:
+        return float("nan")
     ranks = _transform_columns(f.reshape(-1, 1), starts, "rank_ic")[:, 0]
     sizes = np.diff(starts)
     counts_per_date = np.add.reduceat(

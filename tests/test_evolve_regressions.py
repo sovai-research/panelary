@@ -16,7 +16,7 @@ import pytest
 evolve = pytest.importorskip("panelary.evolve")
 
 from panelary.evolve._compile import compile_population  # noqa: E402
-from panelary.evolve._fitness import PanelEvaluator  # noqa: E402
+from panelary.evolve._fitness import PanelEvaluator, rank_ic_series  # noqa: E402
 from panelary.evolve._honest import TrialLedger  # noqa: E402
 from panelary.evolve._types import EvalContext, Gene, Genome  # noqa: E402
 from panelary.factor import forward_return  # noqa: E402
@@ -155,3 +155,106 @@ class TestEvaluatorRowAlignment:
                 assert isinstance(other, float) and np.isnan(other), key
             else:
                 assert other == value, key
+
+
+class TestHoldoutCheck:
+    """Bug: the held-out check reported failure because of a swallowed error.
+
+    A forward label is null on its last ``horizon`` dates, and those dates are
+    exactly the tail of the holdout window. ``rank_ic_series`` built its date
+    groups *before* dropping the null targets, so trailing dates became empty
+    groups and ``np.add.reduceat`` raised ``IndexError``. A bare
+    ``except Exception`` turned that into a "HOLDOUT FAILED" verdict.
+    """
+
+    def test_rank_ic_series_skips_dates_without_a_target(self) -> None:
+        rng = np.random.default_rng(0)
+        n_dates, n_ent = 12, 20
+        t = np.repeat(np.arange(n_dates), n_ent)
+        x = rng.standard_normal(t.size)
+        y = x + rng.standard_normal(t.size)
+        y_gappy = y.copy()
+        y_gappy[t >= n_dates - 2] = np.nan  # the forward label's null tail
+        y_gappy[t == 4] = np.nan  # and a date in the middle with no label
+        want = rank_ic_series(x, y, by_time=t)
+        got = rank_ic_series(x, y_gappy, by_time=t)
+        assert got.shape == (n_dates,)
+        assert np.isnan(got[[4, n_dates - 2, n_dates - 1]]).all()
+        keep = np.setdiff1d(np.arange(n_dates), [4, n_dates - 2, n_dates - 1])
+        np.testing.assert_allclose(got[keep], want[keep], rtol=0, atol=1e-12)
+        assert evolve.rank_ic(x, y_gappy, by_time=t) == pytest.approx(
+            float(np.mean(want[keep])), abs=1e-12
+        )
+
+    def test_holdout_is_scored_when_the_label_has_a_null_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _no_pbo(monkeypatch)
+        frame = _planted()
+        assert frame["fwd"].null_count() > 0  # the realistic case
+        cfg = evolve.EvolveConfig(
+            population=16, generations=2, n_islands=1, max_library=5, seed=0
+        )
+        res = evolve.evolve_features(
+            frame, target="fwd", entity="entity", time="time", config=cfg
+        )
+        diag = res.diagnostics
+        assert "FAILED" not in diag["verdict"], diag["verdict"]
+        assert "holdout_error" not in diag
+        assert diag["n_holdout_candidates"] >= 5
+        assert np.isfinite(diag["holdout_mean_ic"])
+
+    def _search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[object, pl.LazyFrame | None]:
+        from panelary.evolve._search import _time_split
+
+        _no_pbo(monkeypatch)
+        frame = _planted()
+        cfg = evolve.EvolveConfig(
+            population=16, generations=2, n_islands=1, max_library=5, seed=0
+        )
+        res = evolve.evolve_features(
+            frame, target="fwd", entity="entity", time="time", config=cfg
+        )
+        _search_lf, holdout_lf = _time_split(
+            frame.lazy().sort(["entity", "time"]), "time", cfg.holdout_frac
+        )
+        return res, holdout_lf
+
+    def test_a_programming_error_in_the_holdout_check_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import panelary.evolve._fitness as fitness
+        from panelary.evolve._search import _holdout_diagnostics
+
+        res, holdout_lf = self._search(monkeypatch)
+
+        def broken(*_a: object, **_k: object) -> float:
+            raise IndexError("index 659 out-of-bounds in add.reduceat [0, 659)")
+
+        monkeypatch.setattr(fitness, "rank_ic_series", broken)
+        monkeypatch.setattr(fitness, "rank_ic", broken)
+        with pytest.raises(IndexError):
+            _holdout_diagnostics(
+                res.archive, holdout_lf, res.context, target="fwd", seed=0
+            )
+
+    def test_a_polars_failure_on_the_holdout_is_recorded_and_warned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import panelary.evolve._compile as compiler
+        from panelary.evolve._search import _holdout_diagnostics
+
+        res, holdout_lf = self._search(monkeypatch)
+
+        def broken(*_a: object, **_k: object) -> None:
+            raise pl.exceptions.ComputeError("formula blew up on the holdout")
+
+        monkeypatch.setattr(compiler, "compile_population", broken)
+        with pytest.warns(RuntimeWarning, match="holdout"):
+            diag = _holdout_diagnostics(
+                res.archive, holdout_lf, res.context, target="fwd", seed=0
+            )
+        assert diag["verdict"].startswith("HOLDOUT FAILED")
+        assert "ComputeError" in diag["holdout_error"]

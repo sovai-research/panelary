@@ -49,6 +49,7 @@ the search found nothing, and the report says so in words.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -680,6 +681,12 @@ def _holdout_diagnostics(
     from ._fitness import rank_ic
     from ._honest import search_diagnostics
 
+    # Only a Polars failure while evaluating the compiled plan on the holdout
+    # dates is caught: that is data-dependent and should not throw away a
+    # finished search. It is recorded in the result *and* warned about. Any
+    # other exception is a bug and propagates -- a bare `except Exception`
+    # here once turned an IndexError in `rank_ic` into a "HOLDOUT FAILED"
+    # verdict on every panel whose label had a null tail.
     try:
         out_lf, cols = compile_population(
             genomes, ctx, holdout_lf, keep=(target,), drop_intermediates=True
@@ -688,20 +695,27 @@ def _holdout_diagnostics(
         frame = out_lf.select(
             [pl.col(ctx.time), pl.col(target), *[pl.col(c) for c in uniq]]
         ).collect()
-        pos = {c: i for i, c in enumerate(uniq)}
-        held = np.asarray(
-            [
-                rank_ic(
-                    frame[uniq[pos[c]]].to_numpy(),
-                    frame[target].to_numpy(),
-                    by_time=frame[ctx.time].to_numpy(),
-                )
-                for c in cols
-            ],
-            dtype=np.float64,
+    except pl.exceptions.PolarsError as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        warnings.warn(
+            f"evolve_features: the holdout check could not evaluate the "
+            f"archive elites on the held-out dates ({error}); no "
+            "generalisation check was performed.",
+            RuntimeWarning,
+            stacklevel=3,
         )
-    except Exception as exc:  # pragma: no cover - defensive
-        return {"verdict": f"HOLDOUT FAILED: {type(exc).__name__}: {exc}"}
+        return {"verdict": f"HOLDOUT FAILED: {error}", "holdout_error": error}
+    held = np.asarray(
+        [
+            rank_ic(
+                frame[c].to_numpy(),
+                frame[target].to_numpy(),
+                by_time=frame[ctx.time].to_numpy(),
+            )
+            for c in cols
+        ],
+        dtype=np.float64,
+    )
 
     ok = np.isfinite(search_scores) & np.isfinite(held)
     if int(ok.sum()) < 5:
