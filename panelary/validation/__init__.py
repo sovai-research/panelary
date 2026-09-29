@@ -149,15 +149,36 @@ __all__ = [
     "wild_bootstrap",
 ]
 
-# --- Forecast evaluation: calibration diagnostics (plan 1, M2) ---------------
+# --- Forecast evaluation: calibration diagnostics (plan 1, M2) and VaR/ES ----
+# --- backtests (plan 1, M4) ---------------------------------------------------
 from panelary.validation._calibration import (  # noqa: E402
     CORPResult,
     corp_reliability,
     murphy_diagram,
 )
+from panelary.validation._risk_backtest import (  # noqa: E402
+    PredictiveSpec,
+    acerbi_szekely_test,
+    christoffersen_test,
+    dynamic_quantile_test,
+    exceedances,
+    fz0_loss,
+    kupiec_test,
+    qlike_loss,
+    var_backtest,
+)
 
 __all__ += [
     "CORPResult",
+    "PredictiveSpec",
+    "acerbi_szekely_test",
+    "christoffersen_test",
     "corp_reliability",
+    "dynamic_quantile_test",
+    "exceedances",
+    "fz0_loss",
+    "kupiec_test",
     "murphy_diagram",
+    "qlike_loss",
+    "var_backtest",
 ]
