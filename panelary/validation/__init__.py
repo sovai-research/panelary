@@ -99,6 +99,69 @@ from panelary.validation._selection_stats import (
     romano_wolf_mean_test,
 )
 
+# --- forecast evaluation & Sharpe inference (plan 1: fe-sharpe) --------------
+# isort: split
+from panelary.validation._forecast_compare import (
+    FluctuationResult,
+    clark_west,
+    encompassing_test,
+    fluctuation_test,
+    giacomini_white,
+    loss_panel,
+    mincer_zarnowitz,
+    one_time_reversal_test,
+    oos_r2,
+    pesaran_timmermann,
+)
+from panelary.validation._gr_tables import verify_gr_tables
+from panelary.validation._luck_skill import (
+    AlphaBootstrapResult,
+    Pi0Estimate,
+    alpha_bootstrap,
+    luck_versus_skill,
+    storey_pi0,
+)
+from panelary.validation._results import (
+    EVALUATION_SCHEMA,
+    EvaluationResult,
+    evaluation_table,
+)
+from panelary.validation._sharpe import (
+    BlockLengthCalibration,
+    annualize_sharpe,
+    sharpe_block_length,
+    sharpe_ratio_inference,
+    sharpe_ratio_test,
+)
+
+_FE_SHARPE_ALL = [
+    "AlphaBootstrapResult",
+    "BlockLengthCalibration",
+    "EVALUATION_SCHEMA",
+    "EvaluationResult",
+    "FluctuationResult",
+    "Pi0Estimate",
+    "alpha_bootstrap",
+    "annualize_sharpe",
+    "clark_west",
+    "encompassing_test",
+    "evaluation_table",
+    "fluctuation_test",
+    "giacomini_white",
+    "loss_panel",
+    "luck_versus_skill",
+    "mincer_zarnowitz",
+    "one_time_reversal_test",
+    "oos_r2",
+    "pesaran_timmermann",
+    "sharpe_block_length",
+    "sharpe_ratio_inference",
+    "sharpe_ratio_test",
+    "storey_pi0",
+    "verify_gr_tables",
+]
+# --- end fe-sharpe -------------------------------------------------------------
+
 __all__ = [
     "CVReport",
     "CombinatorialPurgedCV",
@@ -147,6 +210,7 @@ __all__ = [
     "walk_forward_backtest_path",
     "walk_forward_splits",
     "wild_bootstrap",
+    *_FE_SHARPE_ALL,
 ]
 
 # --- Forecast evaluation (plan 1): calibration diagnostics (M2), VaR/ES -----

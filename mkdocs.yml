@@ -73,16 +73,17 @@ nav:
     - Feature Attribution: user-guide/attribution.md
     - Latent Factors: user-guide/factors.md
     - Covariance & Market State: user-guide/covariance.md
+    - Cross-Sectional Distribution: user-guide/cross-sectional-distribution.md
     - Shape Algebra: user-guide/shape.md
     - Numerical Embeddings: user-guide/embeddings.md
     - Validation: user-guide/validation.md
     - Honest Validation: user-guide/honest-validation.md
+    - Forecast Evaluation & Sharpe Inference: user-guide/forecast-evaluation.md
     - Calibration & Risk Backtests: user-guide/calibration-and-risk-backtests.md
     - Econometrics: user-guide/econometrics.md
     - Econometric Features: user-guide/econ-features.md
-    - Cross-Sectional Distribution: user-guide/cross-sectional-distribution.md
-    - Realized Measures & Rough Volatility: user-guide/realized-measures.md
     - OHLC Volatility & Liquidity: user-guide/ohlc-volatility-and-liquidity.md
+    - Realized Measures & Rough Volatility: user-guide/realized-measures.md
     - Preprocessing: user-guide/preprocessing.md
     - Data Quality: user-guide/data-quality.md
     - Data Cleaning: user-guide/cleaning.md

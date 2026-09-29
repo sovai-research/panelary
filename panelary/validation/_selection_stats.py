@@ -32,6 +32,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import SupportsFloat
 
 import numpy as np
 
@@ -314,7 +315,10 @@ def holm_bonferroni(
 
 
 def benjamini_hochberg(
-    pvalues: Sequence[float] | np.ndarray, *, alpha: float = 0.05
+    pvalues: Sequence[float] | np.ndarray,
+    *,
+    alpha: float = 0.05,
+    pi0: float | SupportsFloat | None = None,
 ) -> MultipleTestResult:
     """Benjamini-Hochberg (1995) false-discovery-rate control.
 
@@ -328,6 +332,12 @@ def benjamini_hochberg(
         Raw p-values.
     alpha : float, default=0.05
         Target FDR.
+    pi0 : float or Pi0Estimate, optional
+        Share of true nulls, e.g. from :func:`~panelary.validation.storey_pi0`.
+        Given, the adjusted p-values are Storey's q-values
+        ``min_{j >= i} pi0 m p_(j) / j`` (adaptive BH), which are smaller than
+        BH's by the factor ``pi0``. ``None`` (default) is plain BH, bitwise
+        unchanged.
 
     Returns
     -------
@@ -339,7 +349,14 @@ def benjamini_hochberg(
     >>> res.n_rejected
     2
     """
-    return _bh_family(pvalues, alpha=alpha, c_m=1.0, method="benjamini-hochberg")
+    if pi0 is None:
+        return _bh_family(pvalues, alpha=alpha, c_m=1.0, method="benjamini-hochberg")
+    share = float(pi0)
+    if not 0.0 < share <= 1.0:
+        raise ValueError(f"`pi0` must be in (0, 1], got {share}.")
+    return _bh_family(
+        pvalues, alpha=alpha, c_m=share, method=f"benjamini-hochberg(pi0={share:.4g})"
+    )
 
 
 def benjamini_yekutieli(
@@ -454,18 +471,16 @@ def romano_wolf(
 
     n_boot, n_hyp = boot_use.shape
     order = np.argsort(-t_use)  # most significant first
+    # Step j's critical distribution is the row-wise max over the hypotheses not
+    # yet rejected, order[j:], i.e. a *suffix* max of the columns in stepdown
+    # order: one reversed maximum.accumulate gives every step at once, O(B S)
+    # instead of the O(B S^2) loop (bitwise identical: max and counts are exact).
+    sorted_boot = boot_use[:, order]
+    suffix_max = np.maximum.accumulate(sorted_boot[:, ::-1], axis=1)[:, ::-1]
+    exceed = np.count_nonzero(suffix_max >= t_use[order][None, :], axis=0)
+    p_raw = (1.0 + exceed.astype(float)) / (n_boot + 1.0)
     adj = np.empty(n_hyp, dtype=float)
-    remaining = list(order)
-    running = 0.0
-    for j, h in enumerate(order):
-        cols = np.asarray(remaining, dtype=np.int64)
-        max_null = boot_use[:, cols].max(axis=1)
-        p_raw = (1.0 + float(np.count_nonzero(max_null >= t_use[h]))) / (n_boot + 1.0)
-        running = max(running, p_raw)
-        adj[h] = running
-        remaining = list(order[j + 1 :])
-        if not remaining:
-            break
+    adj[order] = np.maximum.accumulate(p_raw)
     return MultipleTestResult(adj <= alpha, adj, float(alpha), "romano-wolf")
 
 
