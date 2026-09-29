@@ -206,7 +206,7 @@ class TestHoldoutCheck:
 
     def _search(
         self, monkeypatch: pytest.MonkeyPatch
-    ) -> tuple[object, pl.LazyFrame | None]:
+    ) -> tuple[object, pl.LazyFrame, pl.LazyFrame | None]:
         from panelary.evolve._search import _time_split
 
         _no_pbo(monkeypatch)
@@ -217,10 +217,10 @@ class TestHoldoutCheck:
         res = evolve.evolve_features(
             frame, target="fwd", entity="entity", time="time", config=cfg
         )
-        _search_lf, holdout_lf = _time_split(
+        search_lf, holdout_lf = _time_split(
             frame.lazy().sort(["entity", "time"]), "time", cfg.holdout_frac
         )
-        return res, holdout_lf
+        return res, search_lf, holdout_lf
 
     def test_a_programming_error_in_the_holdout_check_propagates(
         self, monkeypatch: pytest.MonkeyPatch
@@ -228,7 +228,7 @@ class TestHoldoutCheck:
         import panelary.evolve._fitness as fitness
         from panelary.evolve._search import _holdout_diagnostics
 
-        res, holdout_lf = self._search(monkeypatch)
+        res, search_lf, holdout_lf = self._search(monkeypatch)
 
         def broken(*_a: object, **_k: object) -> float:
             raise IndexError("index 659 out-of-bounds in add.reduceat [0, 659)")
@@ -237,7 +237,12 @@ class TestHoldoutCheck:
         monkeypatch.setattr(fitness, "rank_ic", broken)
         with pytest.raises(IndexError):
             _holdout_diagnostics(
-                res.archive, holdout_lf, res.context, target="fwd", seed=0
+                res.archive,
+                holdout_lf,
+                res.context,
+                target="fwd",
+                seed=0,
+                search_lf=search_lf,
             )
 
     def test_a_polars_failure_on_the_holdout_is_recorded_and_warned(
@@ -246,7 +251,7 @@ class TestHoldoutCheck:
         import panelary.evolve._compile as compiler
         from panelary.evolve._search import _holdout_diagnostics
 
-        res, holdout_lf = self._search(monkeypatch)
+        res, search_lf, holdout_lf = self._search(monkeypatch)
 
         def broken(*_a: object, **_k: object) -> None:
             raise pl.exceptions.ComputeError("formula blew up on the holdout")
@@ -254,10 +259,73 @@ class TestHoldoutCheck:
         monkeypatch.setattr(compiler, "compile_population", broken)
         with pytest.warns(RuntimeWarning, match="holdout"):
             diag = _holdout_diagnostics(
-                res.archive, holdout_lf, res.context, target="fwd", seed=0
+                res.archive,
+                holdout_lf,
+                res.context,
+                target="fwd",
+                seed=0,
+                search_lf=search_lf,
             )
         assert diag["verdict"].startswith("HOLDOUT FAILED")
         assert "ComputeError" in diag["holdout_error"]
+
+
+class _Archive:
+    """The one method `_holdout_diagnostics` reads from an archive."""
+
+    def __init__(self, elites: list[tuple[Genome, float, tuple[float, ...]]]) -> None:
+        self._elites = elites
+
+    def elites(self) -> list[tuple[Genome, float, tuple[float, ...]]]:
+        return list(self._elites)
+
+
+class TestHoldoutOrientation:
+    """Bug: the search diagnostic reported "NO SIGNAL" on a real signal.
+
+    The evaluator orients every candidate on its training dates, so
+    ``-signal`` earns the same search score as ``signal``. The holdout check
+    scored the *raw* IC, putting every negatively signed elite on the wrong
+    side of the in-sample/held-out scatter and destroying its correlation. It
+    also compiled the elites on the holdout dates alone, so any formula with a
+    window longer than the holdout (``ts_zscore(x, 60)`` on a 24-date holdout)
+    was all-null there and silently dropped.
+    """
+
+    GENOMES = (
+        Genome(genes=(Gene("cs_rank", (1,), 0),), n_base=2),  # rank(signal)
+        Genome(genes=(Gene("neg", (1,), 0),), n_base=2),  # -signal
+        Genome(  # -(value + signal)
+            genes=(Gene("add_score", (0, 1), 0), Gene("neg", (2,), 0)), n_base=2
+        ),
+        Genome(genes=(Gene("ts_mean", (1,), 0),), n_base=2),  # ts_mean(signal, 5)
+        Genome(genes=(Gene("neg", (0,), 0),), n_base=2),  # -value
+        Genome(genes=(Gene("ts_zscore", (1,), 4),), n_base=2),  # ts_zscore(sig, 60)
+        Genome(genes=(Gene("ts_delta", (1,), 0),), n_base=2),  # ts_delta(sig, 1)
+    )
+
+    def test_held_out_scores_are_oriented_like_the_search(self) -> None:
+        from panelary.evolve._search import _holdout_diagnostics, _time_split
+
+        frame = _planted()
+        search_lf, holdout_lf = _time_split(
+            frame.lazy().sort(["entity", "time"]), "time", 0.2
+        )
+        assert holdout_lf is not None
+        ev = PanelEvaluator(search_lf, ctx=CTX, target="fwd", seed=0)
+        scores = [r.score for r in ev.evaluate(list(self.GENOMES))]
+        archive = _Archive(
+            [(g, s, (0.0, 0.0, 0.0)) for g, s in zip(self.GENOMES, scores, strict=True)]
+        )
+        diag = _holdout_diagnostics(
+            archive, holdout_lf, CTX, target="fwd", seed=0, search_lf=search_lf
+        )
+        assert diag["n_holdout_candidates"] == len(self.GENOMES)
+        held = diag["scatter"][:, 1]
+        # Every one of these formulas carries the planted signal, in one sign
+        # or the other; oriented as the search oriented them, all generalise.
+        assert (held > 0.05).all(), diag["scatter"]
+        assert diag["verdict"].startswith("SIGNAL"), diag["verdict"]
 
 
 class TestSummaryVerdictOnARealSignal:
