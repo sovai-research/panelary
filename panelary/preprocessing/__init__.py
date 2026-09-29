@@ -10,7 +10,9 @@ Leak-safety splits them in two, and the distinction is the whole story:
 
 * **Pure per-row transforms** -- :func:`lag`, :func:`diff`, :func:`roll`,
   :func:`trim`, :func:`resample`, :func:`one_hot_encode` -- are causal by
-  construction when applied ``.over(entity_col)`` in time order.
+  construction when applied ``.over(entity_col)`` in time order. The one
+  exception is :func:`resample` with its historical left-edge stamping
+  (``label="left"``, today's default, which warns): pass ``label="right"``.
 * **Fitted transforms** -- :func:`scale`, :func:`impute`, :func:`boxcox`,
   :func:`yeojohnson`, :func:`detrend`, :func:`deseasonalize_fourier`,
   :func:`fractional_diff` -- learn state and must be fit on training rows only,

@@ -174,22 +174,31 @@ except ImportError as exc:
 else:
     __all__ += ["label", "triple_barrier"]
 
-# --- [label-spans] Label spans, uniqueness & sample weights (AFML ch. 4) ------
-# numpy + polars only (numba kernels compile lazily through `_internal._jit`),
-# so it is eager like `label` above.
+# --- plan 4: label weights (`weights`), event sampling and bars (`sample`), ---
+# bet sizing (`sizing`). numpy + polars only; the optional numba kernels compile
+# lazily through `_internal._jit` on first call, never at import, so these are
+# eager like `label` above.
 try:
     from panelary import weights as weights
 except ImportError as exc:
     _warn_unavailable("panelary.weights", exc)
 else:
     __all__ += ["weights"]
+
 try:
     from panelary import sample as sample
 except ImportError as exc:
     _warn_unavailable("panelary.sample", exc)
 else:
     __all__ += ["sample"]
-# --- [/label-spans] ------------------------------------------------------------
+
+try:
+    from panelary import sizing as sizing
+except ImportError as exc:
+    _warn_unavailable("panelary.sizing", exc)
+else:
+    __all__ += ["sizing"]
+# --- end plan 4 ------------------------------------------------------------------
 
 # --- Models & feature selection subpackages ---------------------------------
 try:

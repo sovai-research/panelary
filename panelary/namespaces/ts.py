@@ -1,4 +1,4 @@
-"""Additive ``.ts`` operators from :mod:`panelary.depend`: rolling dependence.
+"""Additive ``.ts`` operators: rolling dependence and the trailing trend scan.
 
 The ``.ts`` namespace itself is registered by
 :mod:`panelary.feature_extractors._namespace`. This module only **adds**
@@ -14,6 +14,12 @@ t`` of its own entity only, with ranks, tail thresholds and copula scores
 re-derived inside each window. All parameters have defaults (``other=None``
 pairs the column with its own lag) so the registry conformance suite can build
 and verify each operator without an adapter.
+
+``.ts.trend_scan`` (the look-back half of :mod:`panelary.label._trend`) is added
+here too: the best-|t| OLS trend over a trailing window grid, also
+``safe_scope="rowwise"``::
+
+    df.with_columns(pl.col("close").log().ts.trend_scan(max_window=60).over("id"))
 """
 
 from __future__ import annotations
@@ -29,9 +35,10 @@ from panelary.depend._rolling import (
     rolling_xi,
 )
 from panelary.feature_extractors._namespace import FeatureExtractor
+from panelary.label._trend import trend_scan_expr
 from panelary.registry import FeatureSpec, registry
 
-__all__ = ["ROLLING_SPECS"]
+__all__ = ["ROLLING_SPECS", "TREND_SPECS"]
 
 
 def _ts_rolling_xi(
@@ -71,11 +78,34 @@ def _ts_rolling_gcmi(
     return rolling_gcmi(self._expr, other, window=window)
 
 
+# --- trend scanning (label/_trend.py) -------------------------------------
+def _ts_trend_scan(
+    self: Any,
+    *,
+    min_window: int = 5,
+    max_window: int = 20,
+    step: int = 1,
+    output: str = "t",
+) -> pl.Expr:
+    """Trailing trend scan: best-|t| OLS trend over the window grid
+    ``min_window, min_window+step, ..., <= max_window`` ending at each row;
+    ``output`` is ``"t"``, ``"horizon"`` or ``"slope"`` (see
+    :func:`panelary.label._trend.trend_scan_expr`)."""
+    return trend_scan_expr(
+        self._expr,
+        min_window=min_window,
+        max_window=max_window,
+        step=step,
+        output=output,
+    )
+
+
 _METHODS = {
     "rolling_xi": _ts_rolling_xi,
     "rolling_dcor": _ts_rolling_dcor,
     "rolling_tail_dep": _ts_rolling_tail_dep,
     "rolling_gcmi": _ts_rolling_gcmi,
+    "trend_scan": _ts_trend_scan,
 }
 
 for _name, _fn in _METHODS.items():
@@ -121,4 +151,17 @@ ROLLING_SPECS: tuple[FeatureSpec, ...] = (
 )
 
 for _s in ROLLING_SPECS:
+    registry.register(_s)
+
+#: The trend-scan spec (the causal look-back feature; the forward label
+#: ``label.trend_scanning`` is registered in :mod:`panelary.label._trend`).
+TREND_SPECS: tuple[FeatureSpec, ...] = (
+    _spec(
+        "trend_scan",
+        {"min_window": int, "max_window": int, "step": int, "output": str},
+        "O(T L_max)",
+    ),
+)
+
+for _s in TREND_SPECS:
     registry.register(_s)

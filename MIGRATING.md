@@ -168,6 +168,31 @@ Three label/purge fixes change what you see. Folds from `PurgedKFold` and
   (as in 0.5.0). When a surviving training time is at risk, the splitters emit
   a `UserWarning`; drop unresolved labels before splitting to silence it.
 
+## Upcoming change: `preprocessing.resample` will stamp windows on the right
+
+`resample(freq, agg_method, impute_method)` groups each entity's rows into
+windows `[s, s + freq)` and has always stamped each window at its **left** edge
+`s` (the polars `group_by_dynamic` default). A value stamped `s` therefore
+aggregates data up to `s + freq`: used as a feature, that is a look-ahead of up
+to one `freq`.
+
+`resample` now takes `label=`:
+
+| Call | Stamp | Leak-safe as a feature? |
+|---|---|---|
+| `resample(..., label="right")` | `s + freq`, when the window is complete | yes |
+| `resample(..., label="left")` | `s` (the old behaviour) | no |
+| `resample(...)` (no `label`) | `s`, **plus a `FutureWarning`** | no |
+
+Nothing changes silently today: omitting `label` keeps the old output and warns.
+A future release will make `label="right"` the default, which shifts every
+stamped timestamp forward by one `freq` (the aggregated values themselves do not
+change). To prepare:
+
+- **Features** (anything a model sees at time `t`): pass `label="right"` now.
+- **Code that joins on the old left-edge timestamps** (e.g. calendar labels,
+  reports): pass `label="left"` explicitly to keep them and silence the warning.
+
 ---
 
 ## Why no shim?

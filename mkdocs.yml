@@ -66,6 +66,7 @@ nav:
     - Imputation (CAFE): user-guide/imputation.md
     - Labeling: user-guide/labeling.md
     - Label Spans & Weights: user-guide/labels-and-weights.md
+    - Trend Labels, Bars & Bet Sizing: user-guide/trend-bars-sizing.md
     - Feature Selection: user-guide/selection.md
     - Nonlinear Dependence: user-guide/dependence.md
     - Panel ML Models: user-guide/models.md
