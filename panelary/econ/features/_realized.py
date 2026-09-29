@@ -299,35 +299,37 @@ def _raw_aggs(
     return aggs
 
 
-def _noise_exprs(omega2: str) -> tuple[pl.Expr, pl.Expr]:
+def _noise_exprs() -> tuple[pl.Expr, pl.Expr]:
     """``(omega^2_hat, IV_hat)`` of BNHLS (2009) from the dense and sparse grids.
 
-    ``IV_hat`` is the sparse-grid (about 20-minute) subsampled RV. ``"bnhls"``:
-    ``omega^2 = RV_dense / (2 n_dense)`` with every dense offset pooled;
-    ``"debiased"``: ``max(RV_dense - IV_hat, 0) / (2 n_dense)``, which removes
-    the ``IV / (2 n_dense)`` term that dominates on low-noise bar data.
+    ``IV_hat`` is the sparse-grid (about 20-minute) subsampled RV and
+    ``omega^2_hat = RV_dense / (2 n_dense)`` with every dense offset pooled
+    (``n_dense`` counts non-zero dense returns). On low-noise data the
+    ``IV / (2 n_dense)`` part of ``omega^2_hat`` dominates, which is BNHLS's
+    design: it keeps the bandwidth away from zero. A "debiased"
+    ``max(RV_dense - IV_hat, 0) / (2 n_dense)`` was measured and rejected
+    (2026-09-29): it truncates to zero in many sessions, and the resulting
+    ``H = 0`` kernel was biased by +31% (xi^2 = 1e-4) and +41% (1e-3) on
+    5-second data, against -0.3% and +0.8% for this estimate.
     """
     q = pl.col("__rm_q").cast(pl.Float64)
     nnz = pl.col("__rm_nnzq").cast(pl.Float64)
     iv = pl.col("__rm_sp2") / pl.col("__rm_kiv").cast(pl.Float64)
     rv_dense = pl.col("__rm_dq2") / q
     n_dense = nnz / q
-    if omega2 == "bnhls":
-        om2 = rv_dense / (2.0 * n_dense)
-    else:
-        om2 = pl.max_horizontal(rv_dense - iv, pl.lit(0.0)) / (2.0 * n_dense)
+    om2 = rv_dense / (2.0 * n_dense)
     ok = (nnz > 0) & (iv > 0)
     return pl.when(ok).then(om2), pl.when(ok).then(iv)
 
 
 def _kernel_bandwidth_exprs(
-    bandwidth: Literal["bnhls"] | int, kernel_max_lags: int, omega2: str
+    bandwidth: Literal["bnhls"] | int, kernel_max_lags: int
 ) -> tuple[pl.Expr, pl.Expr]:
     """``(H, capped)``: the per-session kernel bandwidth and its cap flag."""
     if bandwidth != "bnhls":
         return pl.lit(float(bandwidth)), pl.lit(value=False)
     n = pl.col(_N).cast(pl.Float64)
-    om2, iv = _noise_exprs(omega2)
+    om2, iv = _noise_exprs()
     h_star = bnhls_bandwidth_expr(om2 / iv, n - 2.0)
     h_raw = h_star.ceil()
     # min_horizontal skips nulls, so the validity mask is taken on `h_star`.
@@ -363,7 +365,7 @@ def _tsrv_value(rv_k: pl.Expr, k: pl.Expr) -> pl.Expr:
     return pl.when((kf >= 2.0) & (kf < n)).then(value)
 
 
-def _tsrv_auto_k(omega2: str) -> pl.Expr:
+def _tsrv_auto_k() -> pl.Expr:
     """ZMA (2005) ``K* = ceil(c* n^{2/3})``, ``c* = (12 omega^4 / IQ)^{1/3}``.
 
     ``omega^2`` as for the kernel bandwidth; ``IQ`` is the realized quarticity of
@@ -372,7 +374,7 @@ def _tsrv_auto_k(omega2: str) -> pl.Expr:
     """
     n = pl.col(_N).cast(pl.Float64)
     kiv = pl.col("__rm_kiv").cast(pl.Float64)
-    om2, _iv = _noise_exprs(omega2)
+    om2, _iv = _noise_exprs()
     iq = n / (3.0 * kiv * kiv) * pl.col("__rm_sp4")
     c_star = (12.0 * om2 * om2 / iq).pow(1.0 / 3.0)
     k_raw = (c_star * n.pow(2.0 / 3.0)).ceil()
@@ -466,7 +468,6 @@ def intraday_realized_measures(
     jump_alpha: float = 0.999,
     kernel_bandwidth: Literal["bnhls"] | int = "bnhls",
     kernel_max_lags: int = 30,
-    omega2: Literal["bnhls", "debiased"] = "bnhls",
     preaverage_theta: float = 1.0,
     tsrv_k: Literal["auto"] | int = "auto",
     min_obs: int = 10,
@@ -515,12 +516,9 @@ def intraday_realized_measures(
         ``H`` for every session.
     kernel_max_lags : int, default 30
         Autocovariances computed per session. A BNHLS bandwidth above it is
-        capped and flagged in ``rk_capped``.
-    omega2 : {"bnhls", "debiased"}, default "bnhls"
-        Noise-variance estimate for the kernel bandwidth and the automatic TSRV
-        ``K``. ``"bnhls"`` is ``RV_dense / (2 n_dense)`` on an about-2-minute
-        grid; on low-noise bar data it is dominated by ``IV / (2 n_dense)``.
-        ``"debiased"`` subtracts the sparse-grid IV first.
+        capped and flagged in ``rk_capped``. 30 covers 1-minute bars
+        (``H`` about 12-14); the bandwidth grows like ``n^{3/5}``, so raise it
+        for second or tick data (``H`` about 55-60 at 5 seconds).
     preaverage_theta : float, default 1.0
         ``theta`` of the pre-averaging window ``k = 2 ceil(theta sqrt(M) / 2)``.
     tsrv_k : "auto" or int, default "auto"
@@ -555,6 +553,17 @@ def intraday_realized_measures(
     negative values are kept. ``pav`` is JLMPV (2009) with
     ``g(x) = min(x, 1 - x)``.
 
+    **Finite-sample behaviour (measured, 2026-09-29).** With 5-second returns
+    and a noise-to-signal ratio of 1e-4 or 1e-3, ``rk``, ``tsrv`` and ``pav`` are
+    within 1% of the integrated variance while ``rv`` is biased by
+    ``2 n omega^2`` (+94% and +935%). Three small, known biases remain, largest
+    on 1-minute bars: ``pav`` subtracts ``psi_1 / (2 k^2 psi_2)`` of the IV along
+    with the noise (about ``6 / (theta^2 n)``: -1.5% at ``n = 390``); ``tsrv``
+    and ``rv_ss`` miss the ``K - 1`` edge returns (``tsrv`` has expectation
+    ``(n - K + 1)/(n + 1)`` IV without noise); and a bandwidth estimated from
+    the same session correlates with its autocovariances (-1.4% on clean
+    1-minute bars, nil with a fixed ``kernel_bandwidth``).
+
     References
     ----------
     See the module docstring.
@@ -575,8 +584,6 @@ def intraday_realized_measures(
         )
     if label not in ("right", "left"):
         raise ValueError(f"`label` must be 'right' or 'left', got {label!r}.")
-    if omega2 not in ("bnhls", "debiased"):
-        raise ValueError(f"`omega2` must be 'bnhls' or 'debiased', got {omega2!r}.")
     bandwidth: Literal["bnhls"] | int
     if kernel_bandwidth == "bnhls":
         bandwidth = "bnhls"
@@ -665,7 +672,7 @@ def intraday_realized_measures(
         pav = _pav_frame(clean, keys, float(preaverage_theta))
         out = out.join(pav, on=keys, how="left")
     if use_tsrv and tsrv_fixed is None:
-        out = out.with_columns(_tsrv_auto_k(omega2).alias("__rm_tsrv_k"))
+        out = out.with_columns(_tsrv_auto_k().alias("__rm_tsrv_k"))
         with_k = out.select([*keys, "__rm_tsrv_k"]).filter(
             pl.col("__rm_tsrv_k").is_not_null()
         )
@@ -688,7 +695,6 @@ def intraday_realized_measures(
         requested,
         bandwidth=bandwidth,
         kernel_max_lags=kernel_max_lags,
-        omega2=omega2,
         subsample=subsample,
         jump_alpha=float(jump_alpha),
         min_obs=min_obs,
@@ -816,7 +822,6 @@ def _final_columns(
     *,
     bandwidth: Literal["bnhls"] | int,
     kernel_max_lags: int,
-    omega2: str,
     subsample: int,
     jump_alpha: float,
     min_obs: int,
@@ -850,7 +855,7 @@ def _final_columns(
             .alias("__rm_tpqv")
         )
     if "rk" in requested:
-        h, capped = _kernel_bandwidth_exprs(bandwidth, kernel_max_lags, omega2)
+        h, capped = _kernel_bandwidth_exprs(bandwidth, kernel_max_lags)
         first.extend([h.alias("__rm_h"), capped.alias("__rm_capped")])
     bv, tpq = pl.col("__rm_bvv"), pl.col("__rm_tpqv")
     second: list[pl.Expr] = []

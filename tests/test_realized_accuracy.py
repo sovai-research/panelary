@@ -175,3 +175,50 @@ def test_efficiency_ordering_survives_stochastic_volatility() -> None:
     assert mse["rv"] < mse["bv"] < mse["medrv"] < mse["minrv"], mse
     for col in mse:
         assert out[col].mean() / iv.mean() == pytest.approx(1.0, abs=0.01), col
+
+
+# --------------------------------------------------------------------------- #
+# M5: microstructure noise
+# --------------------------------------------------------------------------- #
+def _noisy_sessions(m: int, sessions: int, xi2: float, seed: int) -> np.ndarray:
+    """Returns of ``efficient + noise`` with constant volatility; IV = ``_IV``.
+
+    ``xi2 = omega^2 / IV`` is the noise-to-signal ratio; liquid stocks sit
+    around 1e-4 to 1e-3.
+    """
+    rng = np.random.default_rng(seed)
+    x = np.cumsum(rng.standard_normal((sessions, m + 1)) * np.sqrt(_IV / m), axis=1)
+    y = x + rng.standard_normal((sessions, m + 1)) * np.sqrt(xi2 * _IV)
+    return np.diff(y, axis=1)
+
+
+@pytest.mark.parametrize("xi2", [1e-4, 1e-3])
+def test_noise_robust_measures_are_unbiased_at_five_seconds(xi2: float) -> None:
+    """5-second returns (M = 4680): RV is swamped by ``2 M omega^2``; the kernel,
+    TSRV and pre-averaging are not. Standard errors are about 0.3-0.4%."""
+    m = 4680
+    r = _noisy_sessions(m, 1000, xi2, seed=int(1e6 * xi2))
+    out = _measures(r, measures=["rv", "rk", "tsrv", "pav"], kernel_max_lags=120)
+    assert out["rv"].mean() / _IV - 1 == pytest.approx(2 * m * xi2, rel=0.02)
+    assert not out["rk_capped"].any()
+    for col in ("rk", "tsrv", "pav"):
+        assert out[col].mean() / _IV == pytest.approx(1.0, abs=0.015), col
+
+
+def test_the_default_lag_cap_is_flagged_at_high_frequency() -> None:
+    """BNHLS's bandwidth grows like n^(3/5): at 5 seconds it passes the default
+    30 lags, and the flag says so rather than returning a silent bias."""
+    r = _noisy_sessions(4680, 50, 1e-3, seed=3)
+    out = _measures(r, measures=["rk"])
+    assert out["rk_capped"].all()
+    assert (out["rk_h"] == 30).all()
+
+
+def test_noise_robust_measures_on_one_minute_bars() -> None:
+    """On 1-minute bars the corrections are small and the estimators noisier:
+    within 3% of IV, while RV carries the full ``2 M omega^2`` bias."""
+    r = _noisy_sessions(_M, 8000, 1e-3, seed=12)
+    out = _measures(r, measures=["rv", "rk", "tsrv", "pav"])
+    assert out["rv"].mean() / _IV - 1 == pytest.approx(2 * _M * 1e-3, rel=0.02)
+    for col in ("rk", "tsrv", "pav"):
+        assert out[col].mean() / _IV == pytest.approx(1.0, abs=0.03), col

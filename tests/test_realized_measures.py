@@ -423,7 +423,6 @@ def test_measures_come_out_in_the_requested_order_with_diagnostics() -> None:
         ({"returns": "r", "kernel_bandwidth": 99}, ValueError, "kernel_bandwidth"),
         ({"returns": "r", "tsrv_k": 1}, ValueError, "tsrv_k"),
         ({"returns": "r", "label": "centre"}, ValueError, "label"),
-        ({"returns": "r", "omega2": "x"}, ValueError, "omega2"),
         ({"returns": "missing"}, ValueError, "not found"),
     ],
 )
@@ -479,22 +478,20 @@ def test_kernel_bandwidth_is_capped_and_flagged() -> None:
     assert fixed["rk"][0] == pytest.approx(realized_kernel(noisy, 3), rel=1e-12)
 
 
-def test_debiased_noise_estimate_shrinks_the_bandwidth_without_noise() -> None:
+def test_bnhls_bandwidth_on_clean_one_minute_bars() -> None:
+    """BNHLS read IV / (2 n_dense) as noise on clean 1-minute bars: H ~ 12."""
     rng = np.random.default_rng(10)
     r = rng.standard_normal(390) * 5e-4
-    df = _one_session(list(r))
-    kw = {
-        "entity": "e",
-        "session": "s",
-        "time": "t",
-        "returns": "r",
-        "measures": ["rk"],
-    }
-    bnhls = intraday_realized_measures(df, **kw)  # type: ignore[arg-type]
-    debiased = intraday_realized_measures(df, omega2="debiased", **kw)  # type: ignore[arg-type]
-    # Plain BNHLS reads IV/(2 n_dense) as noise on clean 1-minute bars (H ~ 10).
-    assert 6 <= bnhls["rk_h"][0] <= 14
-    assert debiased["rk_h"][0] < bnhls["rk_h"][0]
+    out = intraday_realized_measures(
+        _one_session(list(r)),
+        entity="e",
+        session="s",
+        time="t",
+        returns="r",
+        measures=["rk"],
+    )
+    assert 8 <= out["rk_h"][0] <= 16
+    assert out["rk_capped"][0] is False
 
 
 def test_tsrv_auto_k_is_small_without_noise_and_grows_with_it() -> None:

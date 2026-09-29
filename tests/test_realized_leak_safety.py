@@ -101,10 +101,9 @@ def test_daily_measures_are_prefix_invariant(cut: int) -> None:
     assert_prefix_invariant(_daily, _PANEL, cut=cut, tol=0.0)
 
 
-@pytest.mark.parametrize("omega2", ["bnhls", "debiased"])
-def test_fixed_settings_are_prefix_invariant_too(omega2: str) -> None:
+def test_fixed_settings_are_prefix_invariant_too() -> None:
     def op(frame: Any) -> pl.DataFrame:
-        return _daily(frame, omega2=omega2, kernel_bandwidth=4, tsrv_k=5)
+        return _daily(frame, kernel_bandwidth=4, tsrv_k=5)
 
     for cut in _BOUNDARY_CUTS:
         assert_no_lookahead(op, _PANEL, cut=cut, tol=0.0)
