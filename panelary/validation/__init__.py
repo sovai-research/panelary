@@ -67,6 +67,18 @@ from panelary.validation._cv import (
     walk_forward_backtest_path,
     walk_forward_splits,
 )
+from panelary.validation._forecast_compare import (
+    FluctuationResult,
+    clark_west,
+    encompassing_test,
+    fluctuation_test,
+    giacomini_white,
+    loss_panel,
+    mincer_zarnowitz,
+    one_time_reversal_test,
+    oos_r2,
+    pesaran_timmermann,
+)
 from panelary.validation._forecast_tests import (
     DieboldMarianoResult,
     MCSResult,
@@ -85,6 +97,7 @@ from panelary.validation._forecast_tests import (
     score_quantile_forecasts,
     superior_predictive_ability,
 )
+from panelary.validation._gr_tables import verify_gr_tables
 
 # --- forecast evaluation & Sharpe inference (plan 1: fe-sharpe) --------------
 from panelary.validation._results import (
@@ -117,11 +130,22 @@ _FE_SHARPE_ALL = [
     "BlockLengthCalibration",
     "EVALUATION_SCHEMA",
     "EvaluationResult",
+    "FluctuationResult",
     "annualize_sharpe",
+    "clark_west",
+    "encompassing_test",
     "evaluation_table",
+    "fluctuation_test",
+    "giacomini_white",
+    "loss_panel",
+    "mincer_zarnowitz",
+    "one_time_reversal_test",
+    "oos_r2",
+    "pesaran_timmermann",
     "sharpe_block_length",
     "sharpe_ratio_inference",
     "sharpe_ratio_test",
+    "verify_gr_tables",
 ]
 # --- end fe-sharpe -------------------------------------------------------------
 

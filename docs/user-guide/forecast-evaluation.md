@@ -108,6 +108,72 @@ BLAS products. The default grid is LW's `(1, 2, 4, 6, 8, 10)` at `T = 120`, scal
 returns `sqrt(q) * sr` and warns, because `sqrt(q)` overstates the annual Sharpe ratio
 of positively autocorrelated returns.
 
+## Forecast comparison beyond Diebold–Mariano
+
+Every test takes a `(T, M)` matrix of forecasts or losses against one `(T,)` benchmark
+and runs in one vectorised pass. The default HAC is Bartlett with `horizon - 1` lags
+(the MA order of an optimal `h`-step error), never a function of `T`.
+
+| Function | Question | Null distribution |
+|---|---|---|
+| `clark_west(y, bench, fc)` | does a model that *nests* the benchmark beat it? | N(0,1), one-sided |
+| `oos_r2(y, fc)` | Campbell–Thompson R²_OS against the expanding historical mean (CW p-value) | N(0,1), one-sided |
+| `mincer_zarnowitz(y, fc)` | unbiased and efficient forecasts, `(alpha, beta) = (0, 1)` | chi2(2) (HAC) or F(2, T-2) |
+| `pesaran_timmermann(y, fc)` | is the direction right more often than chance? | N(0,1); hypergeometric with `exact=True`; HAC regression for `h > 1` |
+| `encompassing_test(y, fa, fb)` | does forecast A encompass B? (HLN 1998) | t(T-1), one-sided |
+| `giacomini_white(la, lb)` | conditional predictive ability | chi2(q) |
+| `fluctuation_test(la, lb)` | relative performance over rolling windows (GR 2010) | shipped GR table |
+| `one_time_reversal_test(la, lb)` | a single break in relative performance (GR 2010) | shipped GR table |
+| `loss_panel(frame, ...)` | panel → `(T, M)` date series of cross-sectional mean losses | — |
+
+**Nested models need Clark–West.** Under the null, the larger model estimates
+parameters that are truly zero, so its squared error is inflated and DM is centred
+below zero. In a rolling-OLS design (R = 120, P = 240, 1,000 replications) DM rejected
+at most 2 % of the time at nominal 10 %, while CW stayed inside [3 %, 12 %]
+(`tests/test_validation_forecast_compare.py`).
+
+**R²_OS benchmark.** The default is the expanding mean of `y` known at `t - h`, with a
+fixed `min_periods`; the full-sample mean uses future returns (a pinned test shows it
+changes R²_OS and fails `assert_no_lookahead`). `benchmark="zero"` reproduces the
+Gu–Kelly–Xiu convention of `embed.baseline_report`. The expanding R²_OS path and the
+Goyal–Welch cumulative SSE-difference path are returned in `details` and are
+prefix-invariant.
+
+**Giacomini–White** is valid for forecasts from a rolling (fixed-size) estimation
+window; `estimation_scheme="expanding"` attaches a warning.
+
+### Giacomini–Rossi tests and their critical values
+
+`fluctuation_test(mode="test")` standardises by the full-sample HAC (GR's test; its path
+is not prefix-invariant and says so). `mode="monitor"` uses an expanding Bartlett HAC
+with a fixed lag and a fixed integer window, so `path[t]` uses only rows up to `t`;
+fractional windows and data-driven lags are rejected there. It is a diagnostic and makes
+no anytime-validity claim; sequential monitoring belongs to the drift-monitoring
+package.
+
+The critical values are **simulated here, not copied**: 200,000 Brownian paths of
+20,000 steps (seed 20260929), plus the same paths subsampled 4×, with a Richardson step
+that removes the `O(1/sqrt(n))` bias of a discretely monitored supremum (Monte Carlo
+SE ≈ 0.004 at 5 %). The generator is `benchmarks/gr_critical_values.py` and
+`verify_gr_tables()` re-simulates a coarse table. Cross-checks:
+
+- The Brownian-bridge part of the reversal statistic reproduces Andrews' sup-LM
+  values (8.88 against 8.85 at 5 %, 15 % trimming).
+- GR's published Table 1 could not be consulted. Rossi's Stata note quotes 2.89 at 5 %
+  near `mu = 0.4`, while the continuous limit here is 2.955. That gap is what a supremum
+  over a few hundred grid points gives: simulated values are 2.875 at P = 200 and 2.91
+  at P = 500.
+- The shipped values are continuous-limit values, so finite-P tests are slightly
+  conservative. Measured sizes at P = 500 and nominal 5 %: 4.7 % (test mode), 4.9 %
+  (monitor mode), and 4.6 % for the one-time reversal at P = 400.
+
+| `mu` | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 |
+|---|---|---|---|---|---|---|---|---|---|
+| `k_0.05` (two-sided) | 3.529 | 3.276 | 3.100 | 2.955 | 2.824 | 2.708 | 2.582 | 2.458 | 2.302 |
+| `k_0.10` | 3.298 | 3.029 | 2.840 | 2.684 | 2.546 | 2.416 | 2.289 | 2.149 | 1.993 |
+
+One-time reversal, 5 %: 10.50 (trim 0.15), 10.08 (trim 0.20).
+
 ## Performance
 
 Reference machine: Apple Silicon, Python 3.13, NumPy 2.5 + Accelerate, single process,
@@ -122,6 +188,8 @@ shared with other jobs (so timings are upper bounds).
 | QS-PW column LRV | T=5000, M=1000 | ≤ 0.3 s | 0.19–0.23 s |
 | Bartlett column LRV, L=9 | T=5000, M=1000 | ≤ 20 ms | 14–29 ms (load-dependent) |
 | Romano–Wolf stepdown | S=1000, B=1000 | ≤ 20 ms | 5 ms (was 0.81 s) |
+| CW / R²_OS / MZ / PT / ENC / GW | T=5000, M=1000 | ≤ 0.3 s each | 0.10 / 0.19 / 0.08 / 0.04 / 0.11 / 0.17 s |
+| fluctuation (test / monitor), one-time reversal | P=5000, M=1000 | ≤ 0.3 s | 0.09 / 0.12 / 0.07 s |
 
 ## References
 
@@ -134,3 +202,9 @@ shared with other jobs (so timings are upper bounds).
   and prewhitening. *Econometrica* 59, 60.
 - Romano, J. P. & Wolf, M. (2005). Stepwise multiple testing as formalized data
   snooping. *Econometrica* 73(4).
+- Clark, T. E. & West, K. D. (2007). *J. Econometrics* 138(1); Campbell, J. Y. &
+  Thompson, S. B. (2008). *RFS* 21(4); Harvey, Leybourne & Newbold (1998). *JBES*
+  16(2); Pesaran & Timmermann (1992). *JBES* 10(4); Giacomini & White (2006).
+  *Econometrica* 74(6); Giacomini & Rossi (2010). *J. Applied Econometrics* 25(4);
+  Andrews, D. W. K. (1993). Tests for parameter instability and structural change
+  with unknown change point. *Econometrica* 61(4).
