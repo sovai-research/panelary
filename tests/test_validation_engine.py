@@ -183,8 +183,11 @@ def test_matmul_cols_pads_single_column() -> None:
     rng = np.random.default_rng(12)
     a = rng.integers(0, 3, (50, 80)).astype(float)
     b = rng.standard_normal((80, 5))
-    np.testing.assert_array_equal(
-        matmul_cols(a, b[:, 2:3])[:, 0], matmul_cols(a, b)[:, 2]
+    # Padding makes the one-column product go through gemm like the wide one;
+    # that is bitwise on most BLAS builds but not all (CI's py3.12 OpenBLAS
+    # differs by 1 ulp), so the guarantee tested is agreement to rounding.
+    np.testing.assert_allclose(
+        matmul_cols(a, b[:, 2:3])[:, 0], matmul_cols(a, b)[:, 2], rtol=1e-13, atol=1e-15
     )
 
 

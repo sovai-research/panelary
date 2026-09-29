@@ -268,7 +268,9 @@ def test_adding_a_strategy_leaves_others_bitwise_unchanged() -> None:
             == getattr(part, field)[1]
             == getattr(single, field)[0]
         )
-    np.testing.assert_array_equal(full.ci[3], single.ci[0])
+    # The interval comes from a bootstrap quantile of a gemm product, which some
+    # BLAS builds (CI's py3.12 OpenBLAS) round differently by shape: 1 ulp.
+    np.testing.assert_allclose(full.ci[3], single.ci[0], rtol=1e-12, atol=1e-15)
 
 
 def test_romano_wolf_on_shared_null_controls_and_detects() -> None:

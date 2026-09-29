@@ -93,8 +93,9 @@ def matmul_cols(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     """``left @ right`` for a 2-D ``right``, with a width-1 ``right`` padded to 2.
 
     BLAS rounds a one-column product (``gemv``) differently from the same column
-    inside a wider product (``gemm``). Padding keeps a model's result bitwise
-    independent of how many other models share the call.
+    inside a wider product (``gemm``). Padding routes both through ``gemm``, so a
+    model's result does not depend on how many other models share the call --
+    bitwise on most BLAS builds, to within an ulp on the rest.
     """
     if right.ndim != 2:
         raise ValueError("`right` must be 2-D.")

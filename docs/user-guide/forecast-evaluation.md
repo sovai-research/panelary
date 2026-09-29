@@ -84,9 +84,11 @@ resample is ever materialised. This is algebraically LW's procedure (agreement w
 literal construction: ~1e-15 relative on `s(Delta*)`).
 
 - All `M` strategies share `N`, which is what Romano–Wolf needs for its joint null.
-- A model's statistic and p-value are bitwise unchanged when other models are added or
-  removed (for a fixed integer `block_length`; `"auto"` takes the maximum Politis–White
-  length over columns and can change with the set of models).
+- A model's statistic and p-value are unchanged when other models are added or removed
+  (for a fixed integer `block_length`; `"auto"` takes the maximum Politis–White length
+  over columns and can change with the set of models). They are bitwise unchanged on
+  every platform CI tests; the confidence interval can move in the last bit on some
+  BLAS builds.
 - Models with different missing-value patterns are grouped by availability and tested
   on their own common dates; Romano–Wolf runs within the largest group, with a warning.
 - `boundaries=` keeps blocks inside CV folds.
