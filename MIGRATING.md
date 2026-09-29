@@ -147,15 +147,15 @@ Three label/purge fixes change what you see. Folds from `PurgedKFold` and
 `CombinatorialPurgedCV` are **byte-identical** to 0.5.0; only the speed of the
 `t1=` purge changed.
 
-- **`label.fixed_horizon` raises on an irregular time grid.** It now computes
+- **`label.fixed_horizon` warns on an irregular time grid.** It now computes
   its forward return through `factor.forward_return`, the library's single
-  audited negative-shift site, and inherits its gap guard: if the per-entity
-  time step is not constant (a missing day, or weekends on a business-day
-  `Date` panel) it raises `ValueError` instead of silently letting a
-  `horizon`-row label span different amounts of time. Outputs on a regular grid
-  are byte-identical. To keep the 0.5.0 behaviour on an irregular grid, pass
-  `allow_gaps=True`; `t1` still records each label's true end time, which is
-  what the purge uses.
+  audited negative-shift site, and uses its gap check: if the per-entity time
+  step is not constant (a missing day, or weekends on a business-day `Date`
+  panel), a `horizon`-row label spans different amounts of time on different
+  rows. By default (`allow_gaps=None`) it emits a `UserWarning` and returns the
+  same output as 0.5.0. Pass `allow_gaps=False` to raise instead, or
+  `allow_gaps=True` to silence the warning. `t1` records each label's true end
+  time, which is what the purge uses.
 - **`label.triple_barrier` gains a `censored` column** (Boolean, appended after
   `t1`). It is `True` for rows whose vertical barrier runs past the entity's
   last row without a touch: 0.5.0 reported those as resolved "no-trend" labels

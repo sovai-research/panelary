@@ -13,12 +13,13 @@ The volatility estimate used to scale the barriers is strictly *trailing*
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 
-from panelary.factor._align import forward_return
+from panelary.factor._align import _check_no_gaps, forward_return
 
 if TYPE_CHECKING:
     from panelary._internal._type_aliases import PolarsFrame
@@ -254,7 +255,7 @@ def fixed_horizon(
     price: str = "close",
     horizon: int,
     threshold: float | None = None,
-    allow_gaps: bool = False,
+    allow_gaps: bool | None = None,
 ) -> pl.DataFrame:
     """Fixed-horizon forward-return label.
 
@@ -279,15 +280,21 @@ def fixed_horizon(
     threshold : float, optional
         Symmetric return threshold for the ternary sign label. If ``None`` the
         continuous forward return is returned in ``label``.
-    allow_gaps : bool, default False
+    allow_gaps : bool or None, default None
         The forward return comes from :func:`panelary.factor.forward_return`,
         the library's single audited negative-shift site, including its gap
-        guard: on an irregular per-entity time grid (more than one distinct
+        guard. On an irregular per-entity time grid (more than one distinct
         time step, e.g. a missing day -- or weekends on a business-day
         ``Date`` panel) a ``horizon``-row shift spans a different amount of
-        time on different rows, so the call raises. Pass ``True`` to accept a
-        row-count horizon on an irregular grid; ``t1`` still records the true
-        end time of every label, which is what the purge uses.
+        calendar time on different rows.
+
+        - ``None`` (default): on an irregular grid, emit a ``UserWarning`` and
+          use the row-count horizon (the pre-0.6 behaviour, unchanged output).
+        - ``False``: raise ``ValueError`` on an irregular grid.
+        - ``True``: accept a row-count horizon silently.
+
+        ``t1`` always records the true end time of every label, which is what
+        the purge uses.
 
     Returns
     -------
@@ -306,7 +313,7 @@ def fixed_horizon(
     ------
     ValueError
         If ``horizon < 1``, or the time grid is irregular and ``allow_gaps``
-        is False.
+        is ``False``.
     """
     if horizon < 1:
         raise ValueError("horizon must be a positive integer")
@@ -314,6 +321,22 @@ def fixed_horizon(
     frame = _as_dataframe(df)
     entity_col, time_col = _resolve_cols(frame, entity, time)
     frame = frame.sort([entity_col, time_col])
+
+    if allow_gaps is None:
+        try:
+            _check_no_gaps(frame, entity=entity_col, time=time_col)
+        except ValueError:
+            warnings.warn(
+                "fixed_horizon: irregular per-entity time grid (e.g. weekends on "
+                "a business-day Date panel, or a missing period), so a "
+                f"horizon={horizon}-row label spans different amounts of time on "
+                "different rows. Using the row-count horizon; `t1` records each "
+                "label's true end. Pass allow_gaps=True to accept this silently, "
+                "or allow_gaps=False to raise.",
+                UserWarning,
+                stacklevel=2,
+            )
+        allow_gaps = True
 
     aligned = forward_return(
         frame,

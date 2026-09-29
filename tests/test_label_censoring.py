@@ -164,12 +164,17 @@ def test_fixed_horizon_byte_identical_on_regular_grid(threshold, horizon) -> Non
 def test_fixed_horizon_gap_guard() -> None:
     df = _prices(4).filter(pl.col("date") != dt.date(2021, 1, 10))  # a missing day
     with pytest.raises(ValueError, match="irregular"):
-        fixed_horizon(df, entity="id", time="date", horizon=3)
+        fixed_horizon(df, entity="id", time="date", horizon=3, allow_gaps=False)
     got = fixed_horizon(df, entity="id", time="date", horizon=3, allow_gaps=True)
     want = ref.frozen_fixed_horizon(
         df, entity="id", time="date", price="close", horizon=3, threshold=None
     )
     assert got.equals(want)
+    # The default warns but keeps the pre-0.6 output, so business-day panels
+    # (weekend gaps) do not start raising.
+    with pytest.warns(UserWarning, match="irregular"):
+        default = fixed_horizon(df, entity="id", time="date", horizon=3)
+    assert default.equals(want)
 
 
 def test_fixed_horizon_resolved_prefix_invariance() -> None:
