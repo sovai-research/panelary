@@ -76,6 +76,7 @@ nav:
     - Honest Validation: user-guide/honest-validation.md
     - Econometrics: user-guide/econometrics.md
     - Econometric Features: user-guide/econ-features.md
+    - Cross-Sectional Distribution: user-guide/cross-sectional-distribution.md
     - Preprocessing: user-guide/preprocessing.md
     - Data Quality: user-guide/data-quality.md
     - Data Cleaning: user-guide/cleaning.md
