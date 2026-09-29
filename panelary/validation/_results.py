@@ -62,7 +62,8 @@ def _as_float_vector(value: Any, m: int, name: str) -> np.ndarray:
 def _json_safe(value: Any) -> Any:
     """Convert numpy containers to JSON-safe Python; non-finite floats become None."""
     if isinstance(value, np.ndarray):
-        return [_json_safe(v) for v in value.tolist()]
+        # ``tolist`` of a 0-d array is a scalar, not a list.
+        return _json_safe(value.tolist())
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     if isinstance(value, Mapping):
@@ -114,6 +115,12 @@ class EvaluationResult:
         Test-specific extras (per-model arrays have leading dimension ``M``).
     warnings : tuple of str
         Human-readable caveats raised while computing the test.
+    per_model : tuple of str, optional
+        The ``details`` keys whose leading dimension is the model axis, which
+        :meth:`__getitem__` slices. ``None`` infers them as every array whose
+        leading dimension equals ``M``, which is ambiguous when a non-model
+        array (a length-``T`` path, a grid) happens to have length ``M``; tests
+        that store such arrays should name the per-model keys explicitly.
     """
 
     test: str
@@ -135,6 +142,7 @@ class EvaluationResult:
     seed: int | None = None
     details: Mapping[str, np.ndarray] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    per_model: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         names = tuple(str(n) for n in self.names)
@@ -165,6 +173,16 @@ class EvaluationResult:
             raise ValueError("`pvalue_adj` requires `adjustment` to name the method.")
         object.__setattr__(self, "details", dict(self.details))
         object.__setattr__(self, "warnings", tuple(self.warnings))
+        if self.per_model is not None:
+            keys = tuple(self.per_model)
+            for k in keys:
+                v = self.details.get(k)
+                if not isinstance(v, np.ndarray) or v.ndim == 0 or v.shape[0] != m:
+                    raise ValueError(
+                        f"`per_model` key {k!r} must name a details array with "
+                        f"leading dimension {m}."
+                    )
+            object.__setattr__(self, "per_model", keys)
 
     @property
     def n_models(self) -> int:
@@ -232,9 +250,10 @@ class EvaluationResult:
     def __getitem__(self, name: str) -> EvaluationResult:
         """The result restricted to one model.
 
-        Per-model ``details`` entries (leading dimension ``M``) are sliced;
-        other entries are kept whole. ``pvalue_adj`` keeps the value adjusted
-        over the full family.
+        Per-model ``details`` entries (the ``per_model`` keys, or when that is
+        ``None`` every array with leading dimension ``M``) are sliced; other
+        entries are kept whole. ``pvalue_adj`` keeps the value adjusted over
+        the full family.
         """
         try:
             i = self.names.index(name)
@@ -246,14 +265,15 @@ class EvaluationResult:
         def pick(a: np.ndarray | None) -> np.ndarray | None:
             return None if a is None else a[sel]
 
-        details = {
-            k: (
-                v[sel]
+        if self.per_model is not None:
+            sliced = set(self.per_model)
+        else:
+            sliced = {
+                k
+                for k, v in self.details.items()
                 if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == m
-                else v
-            )
-            for k, v in self.details.items()
-        }
+            }
+        details = {k: (v[sel] if k in sliced else v) for k, v in self.details.items()}
         return replace(
             self,
             names=(self.names[i],),

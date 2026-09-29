@@ -88,3 +88,24 @@ def test_validation_of_shapes_and_names() -> None:
         _result(pvalue_adj=[0.1, 0.2, 0.3])
     with pytest.raises(ValueError, match="ci"):
         _result(ci=[[0.0, 1.0]])
+
+
+def test_to_dict_handles_zero_dimensional_details() -> None:
+    payload = _result(details={"scalar": np.float64(0.5), "zero_d": np.array(2.0)})
+    out = payload.to_dict()
+    assert out["details"]["zero_d"] == 2.0
+    json.dumps(out, allow_nan=False)
+
+
+def test_per_model_keys_resolve_the_length_m_ambiguity() -> None:
+    # A length-T path whose T happens to equal M must not be sliced.
+    path = np.arange(3.0)
+    res = _result(
+        details={"per_model": np.arange(3.0), "path": path}, per_model=("per_model",)
+    )
+    one = res["b"]
+    assert one.details["per_model"].tolist() == [1.0]
+    assert one.details["path"].tolist() == [0.0, 1.0, 2.0]
+    assert one["b"].details["per_model"].tolist() == [1.0]
+    with pytest.raises(ValueError, match="per_model"):
+        _result(details={"path": np.arange(5.0)}, per_model=("path",))
