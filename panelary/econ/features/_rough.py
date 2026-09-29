@@ -166,9 +166,13 @@ def rough_hurst(
     )
     weights = log_slope_weights(checked)
     positive = pl.all_horizontal([pl.col(c) > 0 for c in tmp])
-    slope = pl.sum_horizontal(
-        [float(w) * pl.col(c).log() for w, c in zip(weights, tmp, strict=True)]
-    )
+    # A left-to-right chain, not `pl.sum_horizontal`: the horizontal sum's
+    # reduction order depends on the thread count and frame size, which moves
+    # the last bit and breaks bitwise prefix invariance (seen on 3 threads).
+    terms = [float(w) * pl.col(c).log() for w, c in zip(weights, tmp, strict=True)]
+    slope = terms[0]
+    for term in terms[1:]:
+        slope = slope + term
     return staged.with_columns(
         pl.when(positive).then(0.5 * slope).otherwise(None).alias(name)
     ).drop(tmp)

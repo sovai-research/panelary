@@ -367,9 +367,13 @@ def _kernel_expr(kernel_max_lags: int) -> pl.Expr:
         parzen_expr(pl.lit(float(lag)) / (h + 1.0)) * pl.col(f"__rm_g{lag}")
         for lag in range(1, kernel_max_lags + 1)
     ]
-    return pl.when(h.is_not_null()).then(
-        pl.col("__rm_g0") + 2.0 * pl.sum_horizontal(terms)
-    )
+    # Null terms count as zero (the `sum_horizontal` semantics), summed in a
+    # fixed left-to-right order: `pl.sum_horizontal`'s reduction order depends
+    # on the thread count, which moves the last bit between runs.
+    total = terms[0].fill_null(0.0)
+    for term in terms[1:]:
+        total = total + term.fill_null(0.0)
+    return pl.when(h.is_not_null()).then(pl.col("__rm_g0") + 2.0 * total)
 
 
 def _tsrv_value(rv_k: pl.Expr, k: pl.Expr) -> pl.Expr:
