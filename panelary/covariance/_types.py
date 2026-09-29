@@ -228,6 +228,9 @@ class CovEstimate:
         their intended use.
     info : dict
         Estimator diagnostics (MP edge, signal count, factor count, ...).
+    location : ndarray, shape (N,), optional
+        The window means the estimate was centred on -- the ``mu`` of a
+        Mahalanobis distance ``(x - mu)^T Sigma^{-1} (x - mu)``.
     """
 
     asof: Any
@@ -245,6 +248,7 @@ class CovEstimate:
     invertible: bool = True
     dense: NDArray[np.float64] | None = None
     info: dict[str, Any] = field(default_factory=dict)
+    location: NDArray[np.float64] | None = None
 
     # ------------------------------------------------------------------ #
     # shape helpers
@@ -516,12 +520,14 @@ class CovEstimate:
         ix = ix.astype(np.intp, copy=False)
         e = self.e[ix] if isinstance(self.e, np.ndarray) else self.e
         ents = tuple(self.entities[int(i)] for i in ix)
+        loc = None if self.location is None else self.location[ix]
         if self.dense is not None:
             return replace(
                 self,
                 entities=ents,
                 scale=self.scale[ix],
                 dense=self.dense[np.ix_(ix, ix)],
+                location=loc,
             )
         full = ix.size == self.n_entities and np.array_equal(
             ix, np.arange(self.n_entities)
@@ -533,6 +539,7 @@ class CovEstimate:
             B=self.B[ix],
             e=e,
             orthonormal=self.orthonormal and full,
+            location=loc,
         )
 
     def _inner_dense(self) -> NDArray[np.float64]:

@@ -75,6 +75,7 @@ def factor_model(
     psi = np.maximum(s - (V * V) @ lam, psi_floor * s)
     return CovEstimate(
         asof=ws.asof,
+        location=ws.mean.copy(),
         entities=ws.entities,
         scale=ws.scale.copy(),
         B=np.ascontiguousarray(V),

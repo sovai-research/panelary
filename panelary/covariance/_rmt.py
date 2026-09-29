@@ -148,6 +148,7 @@ def _estimate(
 ) -> CovEstimate:
     return CovEstimate(
         asof=ws.asof,
+        location=ws.mean.copy(),
         entities=ws.entities,
         scale=scale,
         B=B,

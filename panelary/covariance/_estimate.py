@@ -41,6 +41,7 @@ def sample(ws: WindowStats) -> CovEstimate:
     r = spec.vectors.shape[1]
     return CovEstimate(
         asof=ws.asof,
+        location=ws.mean.copy(),
         entities=ws.entities,
         scale=ws.scale.copy(),
         B=spec.vectors,

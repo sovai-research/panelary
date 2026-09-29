@@ -57,13 +57,20 @@ _CATALOGUE_MODULES: list[str] = []
 # cov-core block (plan 3, M1-M3): estimators, as-of engine, market state.
 # --------------------------------------------------------------------------- #
 if TYPE_CHECKING:  # pragma: no cover - static names for type checkers and IDEs
+    from panelary.core._schedule import Refit, Schedule
     from panelary.covariance._estimate import METHODS, estimate
+    from panelary.covariance._state import (
+        FEATURES,
+        market_loading,
+        market_state,
+    )
     from panelary.covariance._types import (
         CovEstimate,
         SingularCovarianceError,
         Spectrum,
         WindowStats,
     )
+    from panelary.covariance._window import CovarianceSeries, rolling
 
 _EXPORTS.update(
     {
@@ -73,6 +80,15 @@ _EXPORTS.update(
         "WindowStats": "_types",
         "METHODS": "_estimate",
         "estimate": "_estimate",
+        # the shared schedule lives in panelary.core._schedule (note D1);
+        # these are thin re-exports, not a second implementation
+        "Schedule": "_schedule_reexport",
+        "Refit": "_schedule_reexport",
+        "CovarianceSeries": "_window",
+        "rolling": "_window",
+        "FEATURES": "_state",
+        "market_state": "_state",
+        "market_loading": "_state",
     }
 )
 # --------------------------------------------------------------------------- #

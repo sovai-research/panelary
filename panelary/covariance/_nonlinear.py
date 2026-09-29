@@ -247,6 +247,7 @@ def nonlinear_estimate(ws: WindowStats, method: str) -> CovEstimate:
         g, e0 = d - d0, d0
     return CovEstimate(
         asof=ws.asof,
+        location=ws.mean.copy(),
         entities=ws.entities,
         scale=ws.scale.copy(),
         B=V,
