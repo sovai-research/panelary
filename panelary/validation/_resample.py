@@ -31,9 +31,12 @@ segment-local circular padding.
 
 Determinism: all random draws for a call are made up front by one generator, so
 chunking the linear algebra over replicates never changes which indices are
-used. BLAS products are bitwise reproducible for a fixed shape; the helpers here
-keep shapes that matter stable (e.g. a single column is padded to two, because
-``gemv`` and ``gemm`` round differently).
+used. BLAS products are bitwise reproducible for a fixed shape, but a different
+shape (a different chunk of replicates, or more columns) may be blocked
+differently and round differently -- CI's OpenBLAS and Apple M1 runners differ
+by about 1 ulp -- so chunked results agree to rounding, not bitwise. The helpers
+here keep the shapes that matter most stable (e.g. a single column is padded to
+two, because ``gemv`` and ``gemm`` round differently).
 """
 
 from __future__ import annotations

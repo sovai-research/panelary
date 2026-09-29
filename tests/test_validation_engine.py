@@ -158,15 +158,18 @@ def test_count_matrix_means_match_gather() -> None:
         count_matrix(idx + 300, 300)
 
 
-def test_bootstrap_means_chunking_is_bitwise_invariant() -> None:
+def test_bootstrap_means_chunking_is_invariant_to_rounding() -> None:
+    # Chunking changes the gemm shape, and BLAS (OpenBLAS; Accelerate on some
+    # CPUs) may block a different shape differently: the draws are identical,
+    # the means agree to rounding (about 1 ulp), not bitwise.
     rng = np.random.default_rng(11)
     x = rng.standard_normal((500, 9))
     idx = rng.integers(0, 500, size=(400, 500))
     whole = bootstrap_means(x, idx)
     chunked = bootstrap_means(x, idx, chunk_bytes=500 * 8 * 100)
-    np.testing.assert_array_equal(whole, chunked)
+    np.testing.assert_allclose(whole, chunked, rtol=1e-13, atol=1e-16)
     one = bootstrap_means(x[:, 3], idx)
-    np.testing.assert_array_equal(one, whole[:, 3])
+    np.testing.assert_allclose(one, whole[:, 3], rtol=1e-13, atol=1e-16)
 
 
 def test_row_chunks_are_balanced() -> None:
@@ -265,18 +268,20 @@ def test_start_count_cbb_matches_literal_ledoit_wolf(statistic: str) -> None:
             )
 
 
-def test_cbb_engine_chunking_and_column_independence_are_bitwise() -> None:
+def test_cbb_engine_chunking_and_column_independence_agree_to_rounding() -> None:
+    # Same draws; BLAS may round a differently shaped product differently (seen
+    # on CI's OpenBLAS and Apple M1 runners), so compare to rounding.
     rng = np.random.default_rng(15)
     x = rng.standard_normal((400, 6)) * 0.02 + 0.001
     y = rng.standard_normal(400) * 0.02
     draw = circular_block_draw(400, 6, 300, seed=9)
     est, se = _cbb_engine(x, y, draw, "sharpe")
     est_c, se_c = _cbb_engine(x, y, draw, "sharpe", chunk_bytes=400 * 8 * 160 * 2)
-    np.testing.assert_array_equal(est, est_c)
-    np.testing.assert_array_equal(se, se_c)
+    np.testing.assert_allclose(est, est_c, rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(se, se_c, rtol=1e-12, atol=1e-15)
     est_1, se_1 = _cbb_engine(x[:, [4]], y, draw, "sharpe")
-    np.testing.assert_array_equal(est_1[:, 0], est[:, 4])
-    np.testing.assert_array_equal(se_1[:, 0], se[:, 4])
+    np.testing.assert_allclose(est_1[:, 0], est[:, 4], rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(se_1[:, 0], se[:, 4], rtol=1e-12, atol=1e-15)
 
 
 # --------------------------------------------------------------------------- #
