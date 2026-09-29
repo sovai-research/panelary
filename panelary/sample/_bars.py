@@ -170,11 +170,13 @@ def _aggregate(
             f"got {on_duplicate_time!r}."
         )
     bar = pl.col(_CLOSES).cast(pl.Int64).cum_sum().shift(1, fill_value=0).over(entity)
-    frame = frame.with_columns(bar.alias(_BAR)).filter(
-        pl.col(_CLOSES).any().over([entity, _BAR])
-    )
+    frame = frame.with_columns(bar.alias(_BAR))
     size = pl.col(_SIZE)
     out = frame.group_by([entity, _BAR], maintain_order=True).agg(
+        # A bar is complete iff its last tick closes it; only an entity's
+        # trailing, still-open bar fails this. Filtering the (small) aggregate
+        # is far cheaper than a per-bar window over every tick.
+        pl.col(_CLOSES).last().alias("__complete__"),
         pl.col(time).last().alias(time),
         pl.col(time).first().alias("t_open"),
         pl.col(price).first().alias("open"),
@@ -187,12 +189,14 @@ def _aggregate(
         size.filter(pl.col(_SIDE) == 1).sum().alias("buy_volume"),
         *(extra or []),
     )
-    out = out.with_columns(
+    out = out.filter(pl.col("__complete__")).with_columns(
         (pl.col("dollar_volume") / pl.col("volume").cast(pl.Float64)).alias("vwap"),
         pl.col(_BAR).cast(pl.Int64).alias("bar_index"),
     )
     extra_names = [
-        c for c in out.columns if c not in (entity, _BAR, time, *_BAR_COLUMNS)
+        c
+        for c in out.columns
+        if c not in (entity, _BAR, time, "__complete__", *_BAR_COLUMNS)
     ]
     out = out.select(entity, time, *_BAR_COLUMNS, *extra_names)
     return _resolve_duplicate_times(
@@ -455,7 +459,10 @@ def bars(
         frame = frame.with_columns(
             pl.col(_AMOUNT).cum_sum().over(entity_col).alias(c_in)
         )
-        c_ex = pl.col(c_in).shift(1, fill_value=0).over(entity_col)
+        # Exclusive cumsum without a second window: the previous row's
+        # inclusive sum, or 0 at an entity's first tick.
+        first = pl.col(entity_col).ne_missing(pl.col(entity_col).shift(1))
+        c_ex = pl.when(first).then(0).otherwise(pl.col(c_in).shift(1))
         if isinstance(theta, int):
             closes = (pl.col(c_in) // theta) > (c_ex // theta)
         else:
