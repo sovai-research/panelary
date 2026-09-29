@@ -116,7 +116,11 @@ def _time_decay(
     out = np.zeros(n, dtype=np.float64)
     if n == 0:
         return out
-    order = np.lexsort((spans.entity_code, spans.start_tpos))
+    # (t0, entity) is unique per label, so one composite key orders them
+    # deterministically; polars' parallel arg_sort is ~10x numpy's lexsort here.
+    n_ent = int(spans.entity_code.max()) + 1
+    key = spans.start_tpos * n_ent + spans.entity_code
+    order = pl.Series(key).arg_sort().to_numpy().astype(np.int64)
     x = np.cumsum(uniqueness[order])
     total = x[-1]
     slope = (1.0 - c) / total if c >= 0 else 1.0 / ((c + 1.0) * total)

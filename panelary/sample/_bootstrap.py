@@ -103,9 +103,7 @@ def _bootstrap_rows(
     codes = spans.entity_code
     bounds = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1], True])
     for a, b in zip(bounds[:-1].tolist(), bounds[1:].tolist(), strict=True):
-        mask = np.zeros(n_total, dtype=bool)
-        mask[a:b] = True
-        sub = spans.subset(mask)
+        sub = spans.slice(a, b)  # an entity's spans are contiguous in start order
         k = (b - a) if n_draws is None else int(round(k_total * (b - a) / n_total))
         key = entity_keys[int(codes[a])]
         out.append(sub.label_row[_draw(sub, k, _entity_seed(ss, key), method)])

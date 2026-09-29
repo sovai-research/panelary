@@ -323,6 +323,10 @@ def test_subset_and_covers() -> None:
     assert sub.covers(np.array([3])).tolist() == [False, True, False]
     with pytest.raises(ValueError):
         table.subset(np.array([True]))
+    sliced = table.slice(1, 4)
+    masked = table.subset(np.array([False, True, True, True, False, False]))
+    for name in ("start", "end", "label_row", "start_tpos", "end_tpos", "entity_code"):
+        assert np.array_equal(getattr(sliced, name), getattr(masked, name))
 
 
 @pytest.mark.parametrize(

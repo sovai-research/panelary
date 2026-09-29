@@ -214,6 +214,23 @@ class SpanTable:
             n_dropped=self.n_dropped,
         )
 
+    def slice(self, lo: int, hi: int) -> SpanTable:
+        """Spans ``lo:hi`` (in start order) as views -- O(1), unlike a mask."""
+        return SpanTable(
+            start=self.start[lo:hi],
+            end=self.end[lo:hi],
+            seg_start=self.seg_start[lo:hi],
+            seg_end=self.seg_end[lo:hi],
+            label_row=self.label_row[lo:hi],
+            entity_code=self.entity_code[lo:hi],
+            start_tpos=self.start_tpos[lo:hi],
+            end_tpos=self.end_tpos[lo:hi],
+            segments=self.segments,
+            n_rows=self.n_rows,
+            n_times=self.n_times,
+            n_dropped=self.n_dropped,
+        )
+
     def time_projection(self) -> NDArray[np.int64]:
         """Per unique time, the largest ``end_tpos`` of the spans starting there.
 
