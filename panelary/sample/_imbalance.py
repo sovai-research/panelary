@@ -51,6 +51,7 @@ from panelary.sample._bars import (
     _entity_starts,
     _prepare_ticks,
 )
+from panelary.sample._cusum import tick_rule
 
 if TYPE_CHECKING:
     from panelary._internal._type_aliases import PolarsFrame
@@ -67,11 +68,9 @@ def _tick_sign(price: pl.Expr) -> pl.Expr:
 
     Null until the first non-zero price change (no fabricated side for the head
     of the series). Apply ``.over(entity)``. Returns Int8 in ``{-1, +1}``.
-
-    # TODO: use sample.tick_rule once merged (plan 4 M4, A11; label-spans branch).
+    A thin alias of :func:`panelary.sample.tick_rule`, the one implementation.
     """
-    move = price.diff().sign()
-    return pl.when(move == 0).then(None).otherwise(move).forward_fill().cast(pl.Int8)
+    return tick_rule(price)
 
 
 @lazy_njit(nogil=True)

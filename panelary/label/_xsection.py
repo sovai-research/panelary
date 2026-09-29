@@ -72,8 +72,10 @@ def _prepare(
         out=_FWD,
         allow_gaps=allow_gaps,
     )
-    # TODO: use forward_return(end_time=...) once it lands (plan 4 M1, F2).
     # The time column shifted by the same audited call: t1 = time[t + horizon].
+    # Not `forward_return(end_time=...)`: that nulls t1 wherever the return is
+    # null (e.g. a missing price), which would mark such rows as censored; here
+    # t1 is null only where the horizon runs past the data.
     out = forward_return(
         out,
         entity=entity_col,
