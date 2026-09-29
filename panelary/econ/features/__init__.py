@@ -200,3 +200,45 @@ __all__ = [
     "per_entity_apply",
     "per_entity_reduce",
 ]
+
+# --------------------------------------------------------------------------- #
+# Intraday realized measures, HAR extensions, rough volatility
+# (plans/todo/ohlc-volatility-and-liquidity.md, milestones M4-M6)
+# --------------------------------------------------------------------------- #
+from panelary.econ.features._realized import (  # noqa: E402
+    intraday_realized_measures,
+)
+from panelary.registry import FeatureSpec as _FeatureSpec  # noqa: E402
+from panelary.registry import registry as _registry  # noqa: E402
+
+__all__ += ["intraday_realized_measures"]
+
+_REALIZED_SPECS: tuple[_FeatureSpec, ...] = (
+    _FeatureSpec(
+        name="intraday_realized_measures",
+        namespace="econ",
+        input_shape="frame",
+        output_shape="frame",
+        params={
+            "measures": tuple,
+            "subsample": int,
+            "kernel_bandwidth": object,
+            "tsrv_k": object,
+            "min_obs": int,
+        },
+        tier="B",
+        panel_safe=True,
+        leakage_safe=True,
+        # One row per (entity, session), from that session's rows only, stamped
+        # at the session close. Broadcasting it back onto the session's own
+        # intraday rows is a look-ahead by construction (plan section 9, trap 5).
+        safe_scope="window",
+        source="Panelary",
+        license="Apache-2.0",
+        axis="time",
+        flavour="trailing",
+        cost_hint="O(N * H_max)",
+    ),
+)
+for _spec in _REALIZED_SPECS:
+    _registry.register(_spec)

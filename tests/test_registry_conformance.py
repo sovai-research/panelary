@@ -294,6 +294,45 @@ _FRAME_OPS.update(
     {name: _shape_op(factory) for name, (_r, factory) in _SHAPE_FRAME_OPS.items()}
 )
 
+
+# --- econ realized measures / rough volatility (ohlc-volatility-and-liquidity M4-M6)
+def _intraday_realized_op(frame: Any) -> Any:
+    """``intraday_realized_measures`` broadcast back onto every probe row.
+
+    The probe's ``x`` is read as intraday returns in sessions of four rows
+    (``time // 4``). The per-session output is joined back onto the session's
+    own rows -- the per-row broadcast that the ``"window"`` scope forbids, and
+    that section 4 below must therefore find length-dependent.
+    """
+    from panelary.econ.features import intraday_realized_measures
+
+    df = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+    df = df.with_columns((pl.col(TIME) // 4).alias("__session"))
+    daily = intraday_realized_measures(
+        df,
+        entity=ENTITY,
+        session="__session",
+        time=TIME,
+        returns=VALUE,
+        measures=("rv", "bv", "rs_pos", "rq", "n_obs"),
+        min_obs=3,
+    )
+    return df.join(daily.drop(TIME), on=[ENTITY, "__session"], how="left").drop(
+        "__session"
+    )
+
+
+#: ``panelary.econ.features`` frame functions, as ``name -> (rendering, op)``.
+_ECON_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "intraday_realized_measures": (
+        "intraday_realized_measures(<probe panel>, session=time // 4, "
+        "returns='x', min_obs=3) joined back onto every row",
+        _intraday_realized_op,
+    ),
+}
+_FRAME_OPS.update({name: op for name, (_r, op) in _ECON_FRAME_OPS.items()})
+# --- end econ realized measures / rough volatility
+
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
 #: operator that does not hand back a panel cannot be checked by them.
@@ -437,6 +476,8 @@ def _call(spec: FeatureSpec) -> str:
     """A human-readable rendering of what this suite actually ran."""
     if spec.name in _SHAPE_FRAME_OPS:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
+    if spec.name in _ECON_FRAME_OPS:
+        return f"panelary.econ.features.{_ECON_FRAME_OPS[spec.name][0]}"
     if spec.name in _FRAME_OPS:
         return f"panelary.factor.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
