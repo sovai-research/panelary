@@ -1,12 +1,14 @@
 """Frame hygiene: regularising the shape of the time axis.
 
 ``reindex``, ``coerce_dtypes``, ``time_to_arange``, ``resample`` and ``trim``.
-None of these fit state; they reshape the panel index and are causal by
-construction.
+None of these fit state; they reshape the panel index. ``resample`` is causal
+only with ``label="right"`` (see its docstring): its historical left-edge
+stamping reads up to one ``freq`` ahead.
 """
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Literal
 
@@ -93,10 +95,33 @@ def time_to_arange(eager: bool = False):
     return transform
 
 
+#: The labels :func:`resample` accepts, and the one it uses when none is given.
+_RESAMPLE_LABELS = ("left", "right")
+_RESAMPLE_LEGACY_LABEL: Literal["left"] = "left"
+
+
 @transformer
-def resample(freq: str, agg_method: str, impute_method: str | int | float):
+def resample(
+    freq: str,
+    agg_method: str,
+    impute_method: str | int | float,
+    label: Literal["left", "right"] | None = None,
+):
     """
     Resamples and transforms a DataFrame using the specified frequency, aggregation method, and imputation method.
+
+    Each entity's rows are grouped into windows ``[s, s + freq)`` (closed on the
+    left) and aggregated; ``label`` picks the timestamp the window's value is
+    stamped with.
+
+    .. warning:: **``label="left"`` is a look-ahead when the result is used as a
+       feature.** A window stamped at its *left* edge ``s`` aggregates data up to
+       ``s + freq``, so at time ``s`` it already contains observations from the
+       future of ``s``. ``label="right"`` stamps the window at ``s + freq``, the
+       first instant at which every observation in it is known, and is
+       leak-safe. The current default (``label=None``) keeps the historical
+       left stamping and emits a :class:`FutureWarning`: **the default will
+       become ``"right"``**. Pass ``label`` explicitly to silence it.
 
     Parameters
     ----------
@@ -107,10 +132,31 @@ def resample(freq: str, agg_method: str, impute_method: str | int | float):
     impute_method : Union[str, int, float]
         The method used for imputing missing values. If a string, supported values are 'ffill' (forward fill)
         and 'bfill' (backward fill). If an int or float, missing values will be filled with the provided value.
+    label : {"left", "right"}, optional
+        Stamp each window with its left edge (historical behaviour, a
+        look-ahead for features) or its right edge (leak-safe). ``None`` means
+        ``"left"`` with a :class:`FutureWarning`; the default will change to
+        ``"right"``.
     """
+    if label is not None and label not in _RESAMPLE_LABELS:
+        raise ValueError(
+            f"resample: `label` must be one of {list(_RESAMPLE_LABELS)} or None, "
+            f"got {label!r}."
+        )
 
     def transform(X: pl.LazyFrame) -> pl.LazyFrame:
-        entity_col, time_col, target_col = X.columns
+        if label is None:
+            warnings.warn(
+                "resample() stamps each window at its LEFT edge by default, so a "
+                "value stamped t aggregates data up to t + freq: a look-ahead when "
+                "used as a feature. The default will change to label='right' "
+                "(leak-safe) in a future release. Pass label='right' to opt in now, "
+                "or label='left' to keep the current behaviour and silence this "
+                "warning.",
+                FutureWarning,
+                stacklevel=3,
+            )
+        entity_col, time_col, target_col = X.collect_schema().names()
         agg_exprs = {
             "sum": pl.sum(target_col),
             "mean": pl.mean(target_col),
@@ -119,7 +165,14 @@ def resample(freq: str, agg_method: str, impute_method: str | int | float):
         X_new = (
             # Defensive resampling
             X.lazy()
-            .group_by_dynamic(time_col, every=freq, by=entity_col)
+            # `group_by=` (not the `by=` alias, deprecated since polars 0.20.14)
+            # works on every polars this package supports.
+            .group_by_dynamic(
+                time_col,
+                every=freq,
+                group_by=entity_col,
+                label=label or _RESAMPLE_LEGACY_LABEL,
+            )
             .agg(agg_exprs[agg_method])
             # Must defensive sort columns otherwise time_col and target_col
             # positions are incorrectly swapped in lazy
