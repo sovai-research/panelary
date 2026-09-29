@@ -120,14 +120,14 @@ def _window_kernel(
     """
     rows, width = block.shape
     if codes is None:
-        labels = np.zeros(1, dtype=np.int64)
-        gid_all = np.zeros(width, dtype=np.int64)
+        labels: NDArray[np.int64] = np.zeros(1, dtype=np.int64)
+        gid_all: NDArray[np.integer[Any]] = np.zeros(width, dtype=np.int64)
     else:
         labels, gid_all = np.unique(codes, return_inverse=True)
     n_groups = labels.size
     finite = np.isfinite(block)
     if finite.all():
-        counts = np.full(width, rows, dtype=np.int64)
+        counts: NDArray[np.int64] = np.full(width, rows, dtype=np.int64)
         mean = block.mean(axis=0)
         if overwrite:
             dev = block

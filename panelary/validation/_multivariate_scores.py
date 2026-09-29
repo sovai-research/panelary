@@ -74,7 +74,9 @@ def _check_inputs(
         raise ValueError("`samples` needs at least one ensemble member.")
     if int(chunk_bytes) < 1:
         raise ValueError(f"`chunk_bytes` must be positive, got {chunk_bytes}.")
-    ok = np.isfinite(yy).all(axis=1) & np.isfinite(xs).all(axis=(1, 2))
+    ok = np.asarray(
+        np.isfinite(yy).all(axis=1) & np.isfinite(xs).all(axis=(1, 2)), dtype=bool
+    )
     if not ok.all():
         yy = np.where(ok[:, None], yy, 0.0)
         xs = np.where(ok[:, None, None], xs, 0.0)

@@ -181,7 +181,7 @@ def _seq_boot_numpy(
         hi = int(np.searchsorted(start, e0, side="right"))
         if hi <= lo:
             continue
-        cand = np.arange(lo, hi, dtype=np.int64)
+        cand: NDArray[np.int64] = np.arange(lo, hi, dtype=np.int64)
         cand = cand[end[cand] >= s0]
         if cand.size == 0:
             continue

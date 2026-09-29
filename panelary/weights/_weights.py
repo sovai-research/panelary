@@ -331,7 +331,7 @@ def class_weights(
         n_k = np.bincount(inverse).astype(np.float64)
         n = float(y.size)
     else:
-        n_k = np.bincount(inverse, weights=m[keep])
+        n_k = np.bincount(inverse, weights=m[keep]).astype(np.float64, copy=False)
         n = float(np.sum(m[keep]))
     k = classes.shape[0]
     w = n / (k * n_k)

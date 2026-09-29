@@ -192,4 +192,6 @@ def eigen(ws: WindowStats, *, vectors: bool = False) -> Spectrum:
         else:
             V = np.ascontiguousarray(U[:, :r])
         V = orient_signs(V)
-    return Spectrum(values=w, vectors=V, p=p, n_rows=n, n_eff=ws.n_eff)
+    return Spectrum(
+        values=np.asarray(w, dtype=np.float64), vectors=V, p=p, n_rows=n, n_eff=ws.n_eff
+    )

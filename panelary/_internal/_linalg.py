@@ -52,5 +52,5 @@ def solve_vec(A: NDArray[np.float64], b: NDArray[np.float64]) -> NDArray[np.floa
     """
     b = np.asarray(b, dtype=np.float64)
     if b.ndim == 1:
-        return np.linalg.solve(A, b[:, None])[:, 0]
-    return np.linalg.solve(A, b)
+        return np.asarray(np.linalg.solve(A, b[:, None])[:, 0], dtype=np.float64)
+    return np.asarray(np.linalg.solve(A, b), dtype=np.float64)

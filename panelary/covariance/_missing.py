@@ -74,7 +74,7 @@ def zero_after_demean(
             finite = np.isfinite(A)
         A[~finite] = 0.0
     if assume_centered:
-        mean = np.zeros(A.shape[1], dtype=np.float64)
+        mean: NDArray[np.float64] = np.zeros(A.shape[1], dtype=np.float64)
         return A, mean, count
     with np.errstate(invalid="ignore", divide="ignore"):
         mean = A.sum(axis=0) / count
