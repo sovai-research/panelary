@@ -382,8 +382,8 @@ _FRAME_OPS.update(
 )
 
 #: ``panelary.covariance`` frame operations, as ``name -> (rendering, op)``.
-#: All mix entities by design. Each returns one row per date (or panel rows, for ``kelly_jiang_beta``); the
-#: per-date forms run with ``broadcast=True`` so the result is joined back onto
+#: All mix entities by design. Each returns one row per date (or panel rows,
+#: for ``kelly_jiang_beta``); the per-date forms run with ``broadcast=True`` so the result is joined back onto
 #: the probe panel's ``(entity, time)`` keys the verifiers compare on. Windows
 #: are at most 5 dates (the shortest entity has 12 rows), and the tail
 #: fractions are raised so six names a date still produce non-null values.
@@ -477,6 +477,66 @@ _COVARIANCE_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = (
     }
 )
 _FRAME_OPS.update({name: op for name, (_r, op) in _COVARIANCE_FRAME_OPS.items()})
+
+
+# --- econ realized measures / rough volatility (ohlc-volatility-and-liquidity M4-M6)
+def _intraday_realized_op(frame: Any) -> Any:
+    """``intraday_realized_measures`` broadcast back onto every probe row.
+
+    The probe's ``x`` is read as intraday returns in sessions of four rows
+    (``time // 4``). The per-session output is joined back onto the session's
+    own rows -- the per-row broadcast that the ``"window"`` scope forbids, and
+    that section 4 below must therefore find length-dependent.
+    """
+    from panelary.econ.features import intraday_realized_measures
+
+    df = frame.collect() if isinstance(frame, pl.LazyFrame) else frame
+    df = df.with_columns((pl.col(TIME) // 4).alias("__session"))
+    daily = intraday_realized_measures(
+        df,
+        entity=ENTITY,
+        session="__session",
+        time=TIME,
+        returns=VALUE,
+        measures=("rv", "bv", "rs_pos", "rq", "n_obs"),
+        min_obs=3,
+    )
+    return df.join(daily.drop(TIME), on=[ENTITY, "__session"], how="left").drop(
+        "__session"
+    )
+
+
+def _rough_hurst_op(frame: Any) -> Any:
+    """``rough_hurst`` on the probe's ``x`` as a log-variance proxy."""
+    from panelary.econ.features import rough_hurst
+
+    return rough_hurst(
+        frame,
+        entity=ENTITY,
+        time=TIME,
+        log_variance=VALUE,
+        noise_var=0.05,
+        window=8,
+        lags=(1, 2, 3),
+        min_periods=6,
+    )
+
+
+#: ``panelary.econ.features`` frame functions, as ``name -> (rendering, op)``.
+_ECON_FRAME_OPS: dict[str, tuple[str, Callable[[Any], Any]]] = {
+    "intraday_realized_measures": (
+        "intraday_realized_measures(<probe panel>, session=time // 4, "
+        "returns='x', min_obs=3) joined back onto every row",
+        _intraday_realized_op,
+    ),
+    "rough_hurst": (
+        "rough_hurst(<probe panel>, log_variance='x', noise_var=0.05, window=8, "
+        "lags=(1, 2, 3), min_periods=6)",
+        _rough_hurst_op,
+    ),
+}
+_FRAME_OPS.update({name: op for name, (_r, op) in _ECON_FRAME_OPS.items()})
+# --- end econ realized measures / rough volatility
 
 #: Specs that cannot be driven through the verifiers at all, with the reason.
 #: Both verifiers compare output cells keyed by ``(entity, time)``, so an
@@ -623,6 +683,8 @@ def _call(spec: FeatureSpec) -> str:
         return f"panelary.shape.{_SHAPE_FRAME_OPS[spec.name][0]}.fit_transform(<probe panel>)"
     if spec.name in _COVARIANCE_FRAME_OPS:
         return f"panelary.covariance.{_COVARIANCE_FRAME_OPS[spec.name][0]}"
+    if spec.name in _ECON_FRAME_OPS:
+        return f"panelary.econ.features.{_ECON_FRAME_OPS[spec.name][0]}"
     if spec.name in _FRAME_OPS:
         return f"panelary.{spec.namespace}.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":
