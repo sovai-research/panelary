@@ -194,6 +194,11 @@ liq = liquidity_features(
 Each is emitted for every window, alongside a trailing return volatility as the
 natural control.
 
+Range (OHLC) volatility, bid–ask spreads from OHLC bars (EDGE, Corwin–Schultz,
+Abdi–Ranaldo) and the low-frequency proxies `price_impact`,
+`pastor_stambaugh_gamma`, `zero_return_share` and `fht_spread` have their own page:
+[OHLC Volatility & Liquidity](ohlc-volatility-and-liquidity.md).
+
 ## Tail risk
 
 ```python

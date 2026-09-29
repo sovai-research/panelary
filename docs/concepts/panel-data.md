@@ -158,7 +158,7 @@ shape: (6, 4)
 
 `.panel` operators are **causal** (leak-safe in time) and, once scoped `.over(entity)`,
 **panel-safe** (no cross-entity bleed). Shipped operators: `frac_diff`, `zscore`,
-`rs_vol`.
+`rolling_vol` (a rolling standard deviation; `rs_vol` is its deprecated alias).
 
 ### Cross-sectional — `.xs` (within each date, across entities)
 

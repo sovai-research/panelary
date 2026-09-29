@@ -11,7 +11,7 @@ namespace that is registered the moment you `import panelary`:
 | Namespace | Scope | Combine with | Examples |
 | --------- | ----- | ------------ | -------- |
 | `.ts` | per-entity time-series extractors (tsfresh-style) | `group_by(entity)` / `.over(entity)` | `absolute_energy`, `longest_streak_above_mean`, `cid_ce`, `max_drawdown` |
-| `.panel` | per-entity transforms | `.over(entity)` | `frac_diff`, `zscore`, `rs_vol` |
+| `.panel` | per-entity transforms | `.over(entity)` | `frac_diff`, `zscore`, `rolling_vol` |
 | `.xs` | cross-sectional (per-date) transforms | `.over(time)` | `rank`, `demean`, `zscore`, `standardize`, `winsorize`, `quantile_bin`, `neutralize` |
 
 A fourth namespace, `.factor`, holds the cross-sectional factor-research
@@ -321,8 +321,11 @@ transformed = panel.with_columns(
 ```
 
 Registered `.panel` operators include `frac_diff` (fractional differencing), `zscore`
-(rolling z-score), and `rs_vol` (Rogers-Satchell-style volatility) — all `panel_safe`
-and `leakage_safe`.
+(rolling z-score), and `rolling_vol` (the trailing rolling standard deviation) — all
+`panel_safe` and `leakage_safe`. `rs_vol` is a deprecated alias of `rolling_vol`: it was
+never the Rogers-Satchell estimator, only a rolling standard deviation. Range (OHLC)
+volatility — Parkinson, Garman-Klass, Rogers-Satchell, Yang-Zhang — lives in
+[`range_volatility`](ohlc-volatility-and-liquidity.md).
 
 ### `.xs` — across the cross-section (per date)
 

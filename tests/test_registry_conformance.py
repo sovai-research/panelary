@@ -72,6 +72,7 @@ import pytest
 
 import panelary  # noqa: F401  -- registers the ts / xs / panel / factor specs
 from panelary.core.panel_frame import PanelFrame
+from panelary.econ import features as _econ_features
 from panelary.factor import forward_return as _factor_forward_return
 from panelary.factor import orthogonalize as _factor_orthogonalize
 from panelary.label import excess_over_median as _label_excess_over_median
@@ -221,6 +222,7 @@ _SYNTHESISED_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
     "frac_diff": ((0.4,), {}),
     "zscore": ((), {"window": 5}),
     "rs_vol": ((), {"window": 5}),
+    "rolling_vol": ((), {"window": 5}),
     "winsorize": ((0.1,), {}),
     "quantile_bin": ((), {"q": 3}),
     "neutralize": ((AUX,), {}),
@@ -311,6 +313,205 @@ _FRAME_OPS: dict[str, Callable[[Any], Any]] = {
     "bars": _bars_op,
     "imbalance_bars": _imbalance_bars_op,
 }
+
+#: How :func:`_call` renders a frame op that is not a ``panelary.factor`` one.
+_FRAME_OP_RENDERINGS: dict[str, str] = {}
+
+
+# --------------------------------------------------------------------------- #
+# The `econ` namespace: OHLC and liquidity frame functions
+# --------------------------------------------------------------------------- #
+def _ohlc_probe(frame: pl.DataFrame) -> pl.DataFrame:
+    """Positive OHLC bars built *causally* from the probe columns ``x``, ``z``.
+
+    ``close = 100 exp(x / 20)``; ``open`` = the previous close times
+    ``exp(z / 100)`` (the bar's own close on an entity's first row);
+    ``high = max(O, C) exp(|z| / 50)``; ``low = min(O, C) exp(-|x| / 60)``. The
+    interior null of ``x`` becomes a missing close. Two special bars exercise
+    the estimators' edge cases: a zero-range bar (``O = H = L = C``, entity A,
+    t = 7) and a bar pinned at the previous close (``H = L = C_{t-1}``, EDGE's
+    ``tau = 0``; entity B, t = 9). A perturbed future row becomes an infinite
+    or zero price there, i.e. an invalid bar, which the default policy drops.
+    """
+    close = 100.0 * (pl.col(VALUE) / 20.0).exp()
+    prev = close.shift(1).over(ENTITY)
+    out = frame.with_columns(close.alias("close"), prev.alias("__prev"))
+    open_ = pl.coalesce(pl.col("__prev"), pl.col("close")) * (pl.col(AUX) / 100.0).exp()
+    out = out.with_columns(open_.alias("open"))
+    out = out.with_columns(
+        (pl.max_horizontal("open", "close") * (pl.col(AUX).abs() / 50.0).exp()).alias(
+            "high"
+        ),
+        (
+            pl.min_horizontal("open", "close") * (-pl.col(VALUE).abs() / 60.0).exp()
+        ).alias("low"),
+    )
+    flat = (pl.col(ENTITY) == "A") & (pl.col(TIME) == 7)
+    pinned = (pl.col(ENTITY) == "B") & (pl.col(TIME) == 9)
+    return out.with_columns(
+        pl.when(flat)
+        .then(pl.col("close"))
+        .when(pinned)
+        .then(pl.col("__prev"))
+        .otherwise(pl.col(c))
+        .alias(c)
+        for c in ("open", "high", "low", "close")
+    ).drop("__prev")
+
+
+def _range_volatility_op(frame: Any) -> Any:
+    """Every ``range_volatility`` method (and the discreteness / annualisation
+    paths) on the OHLC probe, with a partial-window ``min_periods``."""
+    out = _ohlc_probe(frame)
+    for method in (
+        "yang_zhang",
+        "gk_overnight",
+        "rogers_satchell",
+        "garman_klass",
+        "parkinson",
+        "close_to_close",
+    ):
+        out = _econ_features.range_volatility(
+            out, entity=ENTITY, time=TIME, method=method, window=5, min_periods=3
+        )
+    return _econ_features.range_volatility(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        window=4,
+        discrete_bars=78,
+        periods_per_year=252.0,
+        alias="yz_corrected",
+    )
+
+
+def _ohlc_spread_op(frame: Any) -> Any:
+    """Every ``ohlc_spread`` method on the OHLC probe, rolling and expanding."""
+    out = _ohlc_probe(frame)
+    for method in ("edge", "corwin_schultz", "abdi_ranaldo"):
+        out = _econ_features.ohlc_spread(
+            out,
+            entity=ENTITY,
+            time=TIME,
+            method=method,
+            window=5,
+            min_periods=3,
+            negative="signed",
+            batch_entities=2,
+        )
+    return _econ_features.ohlc_spread(
+        out, entity=ENTITY, time=TIME, window=None, min_periods=4
+    )
+
+
+def _liquidity_probe(frame: pl.DataFrame) -> pl.DataFrame:
+    """Returns, market returns and volumes built causally from ``x``, ``z``.
+
+    ``r`` is the within-entity change of ``x`` (the probe's repeated values
+    make exact zeros), ``m = z / 100`` a market return, ``dv`` a positive
+    dollar volume and ``flow`` a signed order flow.
+    """
+    return frame.with_columns(
+        (pl.col(VALUE).diff().over(ENTITY) / 100.0).alias("r"),
+        (pl.col(AUX) / 100.0).alias("m"),
+        (1e6 * (pl.col(AUX) / 4.0).exp()).alias("dv"),
+        (pl.col(AUX) * 1e3).alias("flow"),
+    )
+
+
+def _price_impact_op(frame: Any) -> Any:
+    out = _liquidity_probe(frame)
+    out = _econ_features.price_impact(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        dollar_volume="dv",
+        window=6,
+        min_periods=4,
+    )
+    return _econ_features.price_impact(
+        out,
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        signed_volume="flow",
+        window=6,
+        intercept=False,
+        alias="lambda_origin",
+    )
+
+
+def _ps_gamma_op(frame: Any) -> Any:
+    return _econ_features.pastor_stambaugh_gamma(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        market_returns="m",
+        dollar_volume="dv",
+        window=6,
+        min_periods=4,
+    )
+
+
+def _zero_return_share_op(frame: Any) -> Any:
+    return _econ_features.zero_return_share(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        volume="dv",
+        window=5,
+        min_periods=3,
+    )
+
+
+def _fht_spread_op(frame: Any) -> Any:
+    return _econ_features.fht_spread(
+        _liquidity_probe(frame),
+        entity=ENTITY,
+        time=TIME,
+        returns="r",
+        window=5,
+        min_periods=3,
+    )
+
+
+_FRAME_OPS["range_volatility"] = _range_volatility_op
+_FRAME_OPS["price_impact"] = _price_impact_op
+_FRAME_OPS["pastor_stambaugh_gamma"] = _ps_gamma_op
+_FRAME_OPS["zero_return_share"] = _zero_return_share_op
+_FRAME_OPS["fht_spread"] = _fht_spread_op
+_FRAME_OP_RENDERINGS.update(
+    {
+        "price_impact": (
+            "panelary.econ.features.price_impact(<liquidity probe>, window=6) with "
+            "dollar_volume, and with signed_volume and intercept=False"
+        ),
+        "pastor_stambaugh_gamma": (
+            "panelary.econ.features.pastor_stambaugh_gamma(<liquidity probe>, "
+            "window=6, min_periods=4)"
+        ),
+        "zero_return_share": (
+            "panelary.econ.features.zero_return_share(<liquidity probe>, "
+            "volume='dv', window=5, min_periods=3)"
+        ),
+        "fht_spread": (
+            "panelary.econ.features.fht_spread(<liquidity probe>, window=5, "
+            "min_periods=3)"
+        ),
+    }
+)
+_FRAME_OPS["ohlc_spread"] = _ohlc_spread_op
+_FRAME_OP_RENDERINGS["ohlc_spread"] = (
+    "panelary.econ.features.ohlc_spread(<OHLC probe>, method=<each of 3>, "
+    "window=5, min_periods=3) and window=None, min_periods=4"
+)
+_FRAME_OP_RENDERINGS["range_volatility"] = (
+    "panelary.econ.features.range_volatility(<OHLC probe>, method=<each of 6>, "
+    "window=5, min_periods=3)"
+)
 
 
 def _shape_op(factory: Callable[[], Any]) -> Callable[[Any], Any]:
@@ -685,6 +886,8 @@ def _call(spec: FeatureSpec) -> str:
         return f"panelary.covariance.{_COVARIANCE_FRAME_OPS[spec.name][0]}"
     if spec.name in _ECON_FRAME_OPS:
         return f"panelary.econ.features.{_ECON_FRAME_OPS[spec.name][0]}"
+    if spec.name in _FRAME_OP_RENDERINGS:
+        return _FRAME_OP_RENDERINGS[spec.name]
     if spec.name in _FRAME_OPS:
         return f"panelary.{spec.namespace}.{spec.name}(<probe panel>)"
     if spec.namespace == "evolve":

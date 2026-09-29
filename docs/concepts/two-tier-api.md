@@ -35,7 +35,7 @@ There are three registered namespaces:
 
 | Namespace | Axis | Scope | Shipped operators |
 | --------- | ---- | ----- | ----------------- |
-| `.panel`  | per-entity, causal | `over=<entity>` | `frac_diff`, `zscore`, `rs_vol` |
+| `.panel`  | per-entity, causal | `over=<entity>` | `frac_diff`, `zscore`, `rolling_vol` |
 | `.xs`     | cross-sectional, same-date | `over=<time>` | `rank`, `demean`, `zscore`, `standardize`, `winsorize`, `quantile_bin`, `neutralize` |
 | `.ts`     | single-series feature extraction | your own `group_by`/`over` | tsfresh-style features (`absolute_energy`, `autocorrelation`, …) |
 

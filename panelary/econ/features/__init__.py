@@ -36,7 +36,21 @@ Yield curves (:mod:`._nelson_siegel`)
 
 Liquidity (:mod:`._liquidity`)
     :func:`amihud_illiquidity`, :func:`roll_spread`, :func:`amivest_liquidity`
-    and the combined :func:`liquidity_features`.
+    and the combined :func:`liquidity_features`; the low-frequency proxies
+    :func:`price_impact`, :func:`pastor_stambaugh_gamma`,
+    :func:`zero_return_share` and :func:`fht_spread`.
+
+OHLC volatility (:mod:`._range`)
+    :func:`range_volatility` -- Parkinson, Garman-Klass, Rogers-Satchell,
+    Garman-Klass with overnight, Yang-Zhang and close-to-close volatility from
+    open/high/low/close bars, with an optional discrete-monitoring correction;
+    :func:`ohlc_variance_terms` exposes the per-bar terms for custom (e.g.
+    EWMA) aggregation.
+
+OHLC spreads (:mod:`._spread`)
+    :func:`ohlc_spread` -- the EDGE estimator of Ardia, Guidotti & Kroencke
+    (2024), Corwin-Schultz and Abdi-Ranaldo bid-ask spreads from OHLC bars,
+    with the signed, averaging-safe moment alongside every spread.
 
 Tails (:mod:`._evt`)
     :func:`hill_index`, :func:`gpd_fit`, :func:`pot_var_es` and
@@ -264,3 +278,32 @@ _REALIZED_SPECS: tuple[_FeatureSpec, ...] = (
 )
 for _spec in _REALIZED_SPECS:
     _registry.register(_spec)
+
+# --- OHLC volatility, spreads and low-frequency liquidity (plan 5, M1-M3) ----
+# One self-contained block (imports, __all__, registry registration) so it merges
+# independently of the realized-measure block.
+from panelary.econ.features._liquidity import _SPECS as _LIQUIDITY_SPECS
+from panelary.econ.features._liquidity import (
+    fht_spread,
+    pastor_stambaugh_gamma,
+    price_impact,
+    zero_return_share,
+)
+from panelary.econ.features._range import _SPECS as _RANGE_SPECS
+from panelary.econ.features._range import ohlc_variance_terms, range_volatility
+from panelary.econ.features._spread import _SPECS as _SPREAD_SPECS
+from panelary.econ.features._spread import ohlc_spread
+from panelary.registry import registry as _registry
+
+__all__ += [
+    "range_volatility",
+    "ohlc_variance_terms",
+    "ohlc_spread",
+    "price_impact",
+    "pastor_stambaugh_gamma",
+    "zero_return_share",
+    "fht_spread",
+]
+for _spec in (*_RANGE_SPECS, *_SPREAD_SPECS, *_LIQUIDITY_SPECS):
+    _registry.register(_spec)
+del _spec

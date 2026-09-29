@@ -54,6 +54,7 @@ with Polars (idempotently) and registers each operator as a
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -119,11 +120,38 @@ def _expr_zscore(expr: pl.Expr, window: int) -> pl.Expr:
     return (expr - mean) / std
 
 
-def _expr_rs_vol(expr: pl.Expr, window: int) -> pl.Expr:
-    """Build the trailing realized-volatility proxy expression over ``window``."""
+def _expr_rolling_vol(
+    expr: pl.Expr, window: int, *, op: str = "rolling_vol"
+) -> pl.Expr:
+    """Build the trailing rolling-standard-deviation expression over ``window``."""
     if not isinstance(window, int) or window <= 0:
-        raise ValueError(f"rs_vol window must be a positive integer, got {window!r}.")
+        raise ValueError(f"{op} window must be a positive integer, got {window!r}.")
     return expr.rolling_std(window_size=window)
+
+
+#: ``rs_vol`` warns once per process, not once per call site.
+_RS_VOL_WARNED = False
+
+_RS_VOL_MESSAGE = (
+    "rs_vol is a rolling standard deviation, not Rogers-Satchell. Use "
+    ".panel.rolling_vol for identical output, or "
+    "pn.econ.features.range_volatility(method='rogers_satchell') for the OHLC "
+    "estimator. rs_vol will be removed no earlier than two minor releases after "
+    "0.5, and the name will never be reused for a different estimator."
+)
+
+
+def _warn_rs_vol() -> None:
+    """Emit the ``rs_vol`` deprecation ``FutureWarning`` (first call only)."""
+    global _RS_VOL_WARNED
+    if not _RS_VOL_WARNED:
+        _RS_VOL_WARNED = True
+        warnings.warn(_RS_VOL_MESSAGE, FutureWarning, stacklevel=3)
+
+
+def _expr_rs_vol(expr: pl.Expr, window: int) -> pl.Expr:
+    """Deprecated alias: exactly :func:`_expr_rolling_vol` (bitwise-identical)."""
+    return _expr_rolling_vol(expr, window, op="rs_vol")
 
 
 def _normalize_columns(columns: str | Sequence[str], *, op: str) -> list[str]:
@@ -262,17 +290,15 @@ class PanelExprNamespace:
         """
         return _expr_zscore(self._expr, window)
 
-    def rs_vol(self, window: int) -> pl.Expr:
-        """Trailing realized volatility over ``window`` (single-series proxy).
+    def rolling_vol(self, window: int) -> pl.Expr:
+        """Trailing rolling standard deviation over ``window`` rows (causal).
 
-        True Rogers-Satchell volatility is an OHLC estimator and requires four
-        columns (open, high, low, close); a single :class:`polars.Expr` cannot
-        provide those. To stay honest, this method computes a **causal,
-        single-series proxy**: the trailing standard deviation of the input over
-        ``window`` rows (treat the input as a return/price-change series).
-
-        For the genuine Rogers-Satchell OHLC estimator, use a dedicated
-        frame-shaped operator that takes all four price columns.
+        The sample standard deviation (``ddof=1``) of the input over the
+        trailing ``window`` rows, inclusive of ``t``. Applied to a return
+        series this is the classical close-to-close volatility; it is **not** a
+        range (OHLC) estimator. For Parkinson, Garman-Klass, Rogers-Satchell or
+        Yang-Zhang volatility from open/high/low/close bars, use
+        :func:`panelary.econ.features.range_volatility`.
 
         Parameters
         ----------
@@ -282,9 +308,32 @@ class PanelExprNamespace:
         Returns
         -------
         pl.Expr
-            Rolling standard deviation (volatility proxy). Combine with
-            ``.over(entity)`` for panels.
+            Rolling standard deviation. Combine with ``.over(entity)`` for
+            panels.
         """
+        return _expr_rolling_vol(self._expr, window)
+
+    def rs_vol(self, window: int) -> pl.Expr:
+        """Deprecated alias of :meth:`rolling_vol` (identical output).
+
+        Despite the name this was never Rogers-Satchell: it is a trailing
+        rolling standard deviation, and so is every value it has ever returned.
+        It emits a :class:`FutureWarning` (once per process) and returns exactly
+        :meth:`rolling_vol`'s expression. For the Rogers-Satchell OHLC
+        estimator use ``panelary.econ.features.range_volatility(method=
+        "rogers_satchell")``.
+
+        Parameters
+        ----------
+        window : int
+            Trailing window length in rows; must be a positive integer.
+
+        Returns
+        -------
+        pl.Expr
+            Rolling standard deviation, bitwise equal to :meth:`rolling_vol`.
+        """
+        _warn_rs_vol()
         return _expr_rs_vol(self._expr, window)
 
 
@@ -397,7 +446,7 @@ class _PanelFrameNamespace:
             op="zscore",
         )
 
-    def rs_vol(
+    def rolling_vol(
         self,
         columns: str | Sequence[str],
         *,
@@ -406,13 +455,13 @@ class _PanelFrameNamespace:
         alias: str | None = None,
         suffix: str | None = None,
     ) -> pl.LazyFrame | pl.DataFrame:
-        """Trailing realized-volatility proxy of ``columns`` over ``window``.
+        """Trailing rolling standard deviation of ``columns`` over ``window``.
 
         Parameters
         ----------
         columns : str | Sequence[str]
-            Column name, or list of column names, whose trailing volatility is
-            computed.
+            Column name, or list of column names, whose trailing standard
+            deviation is computed.
         window : int, keyword-only
             Trailing window length in rows; must be a positive integer.
         over : str, keyword-only
@@ -428,6 +477,51 @@ class _PanelFrameNamespace:
         pl.LazyFrame | pl.DataFrame
             The frame with the new/replaced column(s).
         """
+        return _apply_over(
+            self._frame,
+            lambda c: _expr_rolling_vol(pl.col(c), window),
+            columns,
+            over=over,
+            alias=alias,
+            suffix=suffix,
+            op="rolling_vol",
+        )
+
+    def rs_vol(
+        self,
+        columns: str | Sequence[str],
+        *,
+        window: int,
+        over: str | None = None,
+        alias: str | None = None,
+        suffix: str | None = None,
+    ) -> pl.LazyFrame | pl.DataFrame:
+        """Deprecated alias of :meth:`rolling_vol` (identical output).
+
+        A rolling standard deviation, never Rogers-Satchell; emits a
+        :class:`FutureWarning` once per process.
+
+        Parameters
+        ----------
+        columns : str | Sequence[str]
+            Column name, or list of column names, whose trailing standard
+            deviation is computed.
+        window : int, keyword-only
+            Trailing window length in rows; must be a positive integer.
+        over : str, keyword-only
+            Entity key to group by. **Required** — raises :class:`ValueError`
+            if omitted, to prevent a cross-entity leak.
+        alias : str | None, keyword-only, default None
+            Output column name (single-column only). Defaults to in place.
+        suffix : str | None, keyword-only, default None
+            If given, write each output to ``f"{col}{suffix}"``.
+
+        Returns
+        -------
+        pl.LazyFrame | pl.DataFrame
+            The frame with the new/replaced column(s).
+        """
+        _warn_rs_vol()
         return _apply_over(
             self._frame,
             lambda c: _expr_rs_vol(pl.col(c), window),
@@ -609,10 +703,11 @@ def _is_registered(cls: type, name: str) -> bool:
 # frame op can no longer be silently computed across entity boundaries. The
 # expression form is panel-safe once the user composes ``.over(entity)``.
 #
-# All three are ``safe_scope="rowwise"``: each is a ``series -> series`` filter
+# All four are ``safe_scope="rowwise"``: each is a ``series -> series`` filter
 # that emits one value per row from a bounded *trailing* neighbourhood of that
 # row — a fixed-width causal FIR convolution (``frac_diff``) or a trailing
-# rolling window (``zscore``, ``rs_vol``). The value at ``t`` is a function of
+# rolling window (``zscore``, ``rolling_vol`` and its deprecated alias
+# ``rs_vol``). The value at ``t`` is a function of
 # ``x[t], x[t-1], ...`` only, so evaluating them at every row is the intended
 # and safe usage; there is no window-summary caveat to attach.
 _SPECS: tuple[FeatureSpec, ...] = (
@@ -643,16 +738,32 @@ _SPECS: tuple[FeatureSpec, ...] = (
         license=_LICENSE,
     ),
     FeatureSpec(
+        name="rolling_vol",
+        namespace="panel",
+        input_shape="series",
+        output_shape="series",
+        params={"window": int},
+        tier="A",
+        panel_safe=True,
+        leakage_safe=True,
+        safe_scope="rowwise",
+        source=_SOURCE,
+        license=_LICENSE,
+        axis="time",
+        flavour="trailing",
+        cost_hint="O(N)",
+    ),
+    FeatureSpec(
         name="rs_vol",
         namespace="panel",
         input_shape="series",
         output_shape="series",
         params={"window": int},
-        tier="B",
+        tier="D",
         panel_safe=True,
         leakage_safe=True,
         safe_scope="rowwise",
-        source=_SOURCE,
+        source=f"{_SOURCE} (deprecated alias of rolling_vol)",
         license=_LICENSE,
     ),
 )

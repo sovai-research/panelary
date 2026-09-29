@@ -42,7 +42,7 @@ the rest of Panelary, which keeps it cheap and side-effect-free to import from a
 | `.ts` | 42 | Per-series time-series characteristics | `absolute_energy`, `max_drawdown`, `longest_winning_streak`, `cid_ce` |
 | `.xs` | 7 | Cross-sectional, per date | `cs_zscore`, `demean`, `neutralize`, `quantile_bin`, `rank`, `standardize`, `winsorize` |
 | `.factor` | 4 | Signal evaluation across the cross-section | `forward_return`, `ic`, `orthogonalize`, `portfolio_sort` |
-| `.panel` | 3 | Per-entity, causal | `frac_diff`, `rs_vol`, `zscore` |
+| `.panel` | 4 | Per-entity, causal | `frac_diff`, `rolling_vol`, `zscore`, `rs_vol` (deprecated alias of `rolling_vol`) |
 
 The `.factor` namespace is easy to miss — it is registered alongside the other three and is
 the expression-level counterpart to [`panelary.factor`](factor.md).
