@@ -65,6 +65,7 @@ nav:
     - Feature Engineering: user-guide/features.md
     - Imputation (CAFE): user-guide/imputation.md
     - Labeling: user-guide/labeling.md
+    - Label Spans & Weights: user-guide/labels-and-weights.md
     - Feature Selection: user-guide/selection.md
     - Nonlinear Dependence: user-guide/dependence.md
     - Panel ML Models: user-guide/models.md

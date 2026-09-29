@@ -91,13 +91,21 @@ shape: (6, 6)
 └────────┴──────┴────────────┴───────┴───────────┴─────┘
 ```
 
-The three added columns are:
+The added columns are:
 
 - **`label`** (`Int64`) — `+1` (profit-take), `-1` (stop-loss), or `0` (vertical
   barrier).
 - **`ret`** (`Float64`) — realized return from `t` to the touched barrier.
 - **`t1`** (same dtype as `time`) — the timestamp at which the label resolves.
   Always `t <= t1`, and within `max_holding` steps of `t`.
+- **`censored`** (`Boolean`) — `True` when no barrier was touched and the
+  vertical barrier lies beyond the entity's last row: the horizon was
+  *truncated*, so the label is not resolved yet (the last row is `label=0,
+  t1=t`). Drop these rows before training; see
+  [Label weights](labels-and-weights.md).
+
+A causal volatility column can replace the built-in trailing standard deviation
+for the barrier widths: `triple_barrier(df, ..., vol="sigma")`.
 
 Notice `t1` varies row-by-row: an early barrier touch (row `date=2` resolves at
 `t1=6`) gives a short span, while an untouched observation runs to the full
@@ -182,6 +190,8 @@ shape: (3, 2)
 Here `t1` is simply the timestamp `horizon` steps ahead, and is `null` at the
 tail of each entity where the full horizon is unavailable. `ret` is always the
 continuous forward return; only `label` is discretized when `threshold` is set.
+The forward return comes from `factor.forward_return`, so an irregular time
+grid raises unless you pass `allow_gaps=True`.
 
 ## Meta-labeling
 
