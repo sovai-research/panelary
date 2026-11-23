@@ -6,9 +6,9 @@
 >
 > **Gate (read first).** `AGENTS.md`: *"No new public surface without a named caller in
 > the engine, and a test in the engine that exercises it."* No such caller exists today
-> (verified: `truepoint/src/truepoint/` has no `quant/` package; `diagnose/` is
-> forbidden from importing `panelary` by `truepoint/_firewall.py::FORBIDDEN_PRODUCT`).
-> This plan is therefore **M0-gated**: nothing below M0 starts until the truepoint owner
+> (verified: `vedex-engine/src/vedex/` has no `quant/` package; `diagnose/` is
+> forbidden from importing `panelary` by `vedex/_firewall.py::FORBIDDEN_PRODUCT`).
+> This plan is therefore **M0-gated**: nothing below M0 starts until the engine owner
 > accepts (or replaces) the caller proposed in §12. It also ranks behind the AGENTS.md
 > "what to build first" items (`CompileResult.to_json`, pipeline `audit()`, as-of join).
 
@@ -1013,7 +1013,7 @@ point to `features()` as the throughput path.
 
 | M | Contents | Exit gate |
 |---|---|---|
-| **M0 — caller** | Agree the §12 caller with the truepoint owner. Engine test stub written on the truepoint side. | A named caller and a failing engine test exist. **Nothing else starts before this.** |
+| **M0 — caller** | Agree the §12 caller with the engine owner. Engine test stub written on the engine side. | A named caller and a failing engine test exist. **Nothing else starts before this.** |
 | **M1 — spine + wavelets** | Create `_internal/_wavelets.py` and `_internal/_blocked.py` (the move plus the `detect` alias). `_stream`, `_seeds`, `_design` (Haar offset table + generator script). Haar/D4/LA8 streams, `haar_decompose`, `modwt`, energies, wavelet variance, `haar_hurst`, `wavelet_beta`/`corr`. `.ts` ops + specs, `features()` skeleton with `preset="core"` (wavelet part), eager import. | §8.1–8.3 for wavelets; the Haar known-answer rows; the import-time budget; §9 wavelet budget; conformance ≥ 80%. |
 | **M2 — ordinal** | Codes, LEX/REV tables, cumulative histograms plus the time-loop fallback, PE (rolling + registration of the existing scalar), WPE, C_JS, Fisher, missing (+ i.i.d. table), OTN, irreversibility, composite MPE. The `extract_features` opt-in hook + `features="complexity"` preset; `pn.features(method="complexity")`. | ordpy/antropy parity; logistic/sine/ramp known answers; `core` preset complete and ≤ 15 s. |
 | **M3 — scaling** | Direct box statistics, DFA-1/2, DMA θ∈{0,½}, GHE (+ τ_max-averaged weights, `demean`), R/S-AL, DCCA, MF-DFA + Gaussian-null tables. `bench_complexity_estimators.py`. | The §1.3 table reproduced within MC noise; nolds/MFDFA parity; fGn known answers; pinned skeptical tests green. |
@@ -1085,9 +1085,9 @@ Sequencing: B blocks all others, and A blocks D's DCCA-vs-wavelet comparison onl
 
 ## 12. Caller
 
-**Status: none exists** (see the gate at the top of this file). Proposed, for the truepoint owner to accept or reject:
+**Status: none exists** (see the gate at the top of this file). Proposed, for the engine owner to accept or reject:
 
-- **Where:** `truepoint/src/truepoint/quant/series_descriptors.py` (new). Not in
+- **Where:** `vedex-engine/src/vedex/quant/series_descriptors.py` (new). Not in
   `diagnose/`, which is firewalled from panelary.
 - **What:** for each generated item in the computation and temporal families
   (`generate/family_computation.py`, e.g. the `return_window` template), compute
@@ -1096,7 +1096,7 @@ Sequencing: B blocks all others, and A blocks D's DCCA-vs-wavelet comparison onl
 - **Why:** they become stratification covariates for `inference/errorbars.py`. That
   answers a question the product leads with: *is the assessed AI silently wrong more
   often on high-entropy, anti-persistent windows?*
-- **Engine test:** `truepoint/tests/quant/test_series_descriptors.py`. It asserts
+- **Engine test:** `vedex-engine/tests/quant/test_series_descriptors.py`. It asserts
   bitwise-identical descriptors across two runs (deterministic re-runs), and that a
   descriptor for as-of date d is unchanged when data after d is appended
   (`panelary.testing.assert_prefix_invariant`).

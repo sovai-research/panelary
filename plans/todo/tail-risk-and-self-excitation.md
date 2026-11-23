@@ -1115,7 +1115,7 @@ Each of these is resolved by a benchmark, not an opinion.
 the engine that exercises it."** This plan is honest about where it stands.
 
 - **M1 (drawdowns): candidate caller
-  `truepoint/src/truepoint/generate/family_computation.py`.**
+  `vedex-engine/src/vedex/generate/family_computation.py`.**
   - The COMPUTATION family (metric `COMPUTATION_FIDELITY`) has three templates today:
     `return_window`, `agency_fy_obligation` and `weekly_sum`.
   - Templates such as `max_drawdown_window` or `time_under_water` need **one fixed,
@@ -1128,7 +1128,7 @@ the engine that exercises it."** This plan is honest about where it stands.
     confirm.
   - Gold answers are computed from ledger facts. Nothing here touches sealed questions.
 - **M2–M4 (GARCH, GARCH-EVT): no caller today.** The natural home is
-  `truepoint/src/truepoint/quant/`, which AGENTS.md names but which **does not exist
+  `vedex-engine/src/vedex/quant/`, which AGENTS.md names but which **does not exist
   yet**. A plausible use is a check that recomputes a system's volatility or VaR claim
   under the causal reference and the leaky full-sample reference, and reports which one
   it matches, as `Evidence(kind=STATIC_ANALYSIS)`. **Do not start M2 until that check is

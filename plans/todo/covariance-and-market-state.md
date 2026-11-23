@@ -71,7 +71,7 @@ observations, median of 30 draws.
 
 Nothing in the sample-covariance row raises an error. At N > W the matrix is
 singular. `pinv` returns weights, and those weights carry **2,095×** the minimum
-variance. That is the "silently wrong" failure mode the AgenticFinance engine tests for.
+variance. That is the "silently wrong" failure mode the Vedex engine tests for.
 
 No single estimator dominates: a 1-factor model wins at N=100 *in this
 factor-structured population*. The product decision therefore has two parts:
@@ -927,7 +927,7 @@ estimate-out core. M2 is where the as-of promise is proven.
 > modules. `pn.covariance` is not documented, not in `mkdocs` nav, and not advertised
 > in `llms.txt` until the caller test below exists (M3 exit criterion).
 
-Most plausible caller: **`truepoint/src/truepoint/generate/family_computation.py`**
+Most plausible caller: **`vedex-engine/src/vedex/generate/family_computation.py`**
 (the deterministic, tolerance-graded computation family, metric `COMPUTATION_FIDELITY`).
 A risk-computation template kind (trailing correlation or volatility, shrunk-covariance
 GMV variance, absorption ratio as of a date) needs a reference calculator that is
@@ -936,17 +936,17 @@ as-of, deterministic and prefix-invariant. That is exactly `cov.estimate` /
 import `generate` and needs nothing from panelary. Generated answer keys are sealed
 ground truth. They are never written into panelary tests, fixtures or docs.
 
-Second candidate: **`truepoint/src/truepoint/validity/`**, stratifying reliability
+Second candidate: **`vedex-engine/src/vedex/validity/`**, stratifying reliability
 results by as-of market state (turbulence, absorption-ratio decile) to test whether
 agents are more often silently wrong in stressed markets.
 
-**Firewall note:** `truepoint/_firewall.py` forbids `diagnose/` from importing panelary.
+**Firewall note:** `vedex/_firewall.py` forbids `diagnose/` from importing panelary.
 Cause assignment must never call this module. It may appear only later, in
 `recommend/`, as a disclosed affiliated option alongside alternatives (STRATEGY §3).
 
-Consumed by: `truepoint/generate/` (reference values), then `truepoint/validity/`
+Consumed by: `vedex/generate/` (reference values), then `vedex/validity/`
 (regime stratification).
-Caller: `truepoint/src/truepoint/generate/family_computation.py`.
+Caller: `vedex-engine/src/vedex/generate/family_computation.py`.
 
 ### 12.2 Boundaries with the nine sibling plans
 

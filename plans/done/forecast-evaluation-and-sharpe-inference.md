@@ -13,7 +13,7 @@
 > SPA/MCS onto the count-matrix engine), Acerbi–Székely Z3, LW (2008) Table 3 fixtures
 > (data unavailable), DGJ asymptotic CORP bands. The user directed integration, which
 > overrides the AGENTS.md caller gate for this plan; M2 (CORP) is the drop-in successor to
-> truepoint's binned ECE (see `docs/user-guide/calibration-and-risk-backtests.md`).
+> the engine's binned ECE (see `docs/user-guide/calibration-and-risk-backtests.md`).
 
 Extends the honest-validation layer (`panelary/validation/`) with the statistics that
 decide whether a performance claim survives contact with serial dependence, fat tails,
@@ -85,7 +85,7 @@ T = 5,000 dates with a shared studentized bootstrap in about a second" true on a
   `pit_histogram`.
 - There is no FDR procedure that estimates the null proportion (π₀), which is the
   luck-versus-skill question across many agents or strategies.
-- **truepoint's M07 calibration metric (`truepoint/src/truepoint/inference/calibration.py::ece`)
+- **the engine's M07 calibration metric (`vedex-engine/src/vedex/inference/calibration.py::ece`)
   is binned ECE.** Dimitriadis, Gneiting & Jordan (2021) show that binned reliability is
   unstable: bin count and bin edges change the verdict. CORP (PAV-based) is the stable
   replacement, and it comes with an exact MCB/DSC/UNC score decomposition.
@@ -234,7 +234,7 @@ class EvaluationResult:
     details: Mapping[str, np.ndarray] = field(default_factory=dict)   # test-specific extras
     warnings: tuple[str, ...] = ()
     def to_frame(self) -> pl.DataFrame: ...        # EVALUATION_SCHEMA, one row per model
-    def to_dict(self) -> dict[str, Any]: ...       # JSON-safe; the truepoint Evidence payload
+    def to_dict(self) -> dict[str, Any]: ...       # JSON-safe; the engine's Evidence payload
     def __getitem__(self, name: str) -> "EvaluationResult": ...
 ```
 
@@ -896,7 +896,7 @@ AGENTS.md gate (§12) decides what becomes public.
 | M | Contents | Ships | Gate |
 |---|---|---|---|
 | **M1** | `_results`, `_hac`, `_resample`, `_sharpe` (all methods, pairwise and M-vs-benchmark, log-variance, calibration of b, Lo annualisation); suffix-max `romano_wolf` | Sharpe CIs and difference tests that hold their size under fat tails and serial correlation; the roadmap item closes | `test_validation_sharpe_calibration.py` green (slow suite) |
-| **M2** | `_calibration`: PAV (+ numba), `corp_reliability`, `murphy_diagram` | stable reliability diagrams and the score decomposition; truepoint M07 has a drop-in successor to binned ECE | PAV parity against both oracles |
+| **M2** | `_calibration`: PAV (+ numba), `corp_reliability`, `murphy_diagram` | stable reliability diagrams and the score decomposition; the engine's M07 has a drop-in successor to binned ECE | PAV parity against both oracles |
 | **M3** | `_forecast_compare`, `_gr_tables`, `loss_panel`, `_dm_columns` | nested, conditional, and unstable forecast comparison on panels | GR tables verified; prefix-invariance suite green |
 | **M4** | `_risk_backtest` (Kupiec exact, Christoffersen MC, DQ, AS Z1/Z2, FZ0, QLIKE, `var_backtest`) | honest VaR/ES backtests with exact small-sample nulls | size tests at T = 250 green |
 | **M5** | `storey_pi0`, `benjamini_hochberg(pi0=)`, `luck_versus_skill`, `alpha_bootstrap`, `significance_hurdle` | luck vs skill across many strategies or agents | KTWW vs FF2010 calibration test green |
@@ -906,7 +906,7 @@ AGENTS.md gate (§12) decides what becomes public.
 Order rationale:
 
 - M1 is the core of the request and unlocks the shared engine.
-- M2 has the **only caller that exists today** (truepoint M07), and it can move to first
+- M2 has the **only caller that exists today** (the engine's M07), and it can move to first
   if the orchestrator enforces the caller rule strictly.
 - M4 can run in parallel with M3 once M1's `_results` / `_hac` exist.
 - Do not start M7 before M1's engine tests are green.
@@ -943,8 +943,8 @@ Order rationale:
    - "Ledoit–Wolf": the Sharpe test here versus shrinkage in sibling 3.
    - "Variance ratio": the LW log-variance test here versus the Lo–MacKinlay random-walk
      VR test. The latter is not in scope, and the docs must say so.
-   - "Truepoint" versus the RIA, noted in the universe CLAUDE.md. This plan never ships
-     that name.
+   - "Truepoint" versus the RIA: resolved on 2026-11-23, when the engine was renamed the
+     Vedex engine. This plan never shipped the old name.
 9. **Shared primitives with siblings.**
    - `_hac.py` (column LRV) and `_resample.py` (count matrix, CBB) are proposed as the
      single homes. Siblings 2 (sequential tests on loss differentials) and 9 (GARCH
@@ -968,9 +968,9 @@ unexported) until its caller and engine test exist. Only then is it added to
 
 | Capability | Most plausible caller | Status |
 |---|---|---|
-| `corp_reliability`, `murphy_diagram` | `truepoint/src/truepoint/inference/calibration.py` (M07: binned `ece` today; `aurc` is a Wave-2 stub) and `truepoint/src/truepoint/validity/calibration_check.py` | **the caller exists.** Engine test: CORP MCB/DSC/UNC on a synthetic confidence/correctness fixture (never sealed data) |
-| Sharpe inference, VaR/ES backtests, forecast-comparison tests | `truepoint/src/truepoint/quant/` (AGENTS.md's named caller, not yet created): re-testing an assessed financial AI's quantitative claims ("beats the benchmark", "VaR is calibrated"). `EvaluationResult.to_dict()` becomes `Evidence` | caller planned, not built |
-| `luck_versus_skill`, `storey_pi0`, `benjamini_hochberg(pi0=)` | assessments over many agents or models: what share of apparent outperformance survives the FDR | plausible, via truepoint `inference/` |
+| `corp_reliability`, `murphy_diagram` | `vedex-engine/src/vedex/inference/calibration.py` (M07: binned `ece` today; `aurc` is a Wave-2 stub) and `vedex-engine/src/vedex/validity/calibration_check.py` | **the caller exists.** Engine test: CORP MCB/DSC/UNC on a synthetic confidence/correctness fixture (never sealed data) |
+| Sharpe inference, VaR/ES backtests, forecast-comparison tests | `vedex-engine/src/vedex/quant/` (AGENTS.md's named caller, not yet created): re-testing an assessed financial AI's quantitative claims ("beats the benchmark", "VaR is calibrated"). `EvaluationResult.to_dict()` becomes `Evidence` | caller planned, not built |
+| `luck_versus_skill`, `storey_pi0`, `benjamini_hochberg(pi0=)` | assessments over many agents or models: what share of apparent outperformance survives the FDR | plausible, via the engine's `inference/` |
 | in-repo consumers | `evolve.TrialLedger` (HAC SE into DSR via `sharpe_std=`); `core.model_selection.cross_validate` (path-Sharpe CIs); `embed.baseline_report` (`oos_r2` with a CW p-value) | internal; does not satisfy the rule by itself |
 
 No sealed ground-truth questions, seeds, or answer keys appear in any test, fixture, or

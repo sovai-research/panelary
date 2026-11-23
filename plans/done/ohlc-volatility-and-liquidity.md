@@ -818,21 +818,21 @@ caller (AGENTS.md).
 > **AGENTS.md: "No new public surface without a named caller in the engine,
 > and a test in the engine that exercises it."**
 
-**Today there is none.** `truepoint/src/truepoint/quant/` (the caller directory
-AGENTS.md names) does not exist, and nothing in `truepoint/src` computes
+**Today there is none.** `vedex-engine/src/vedex/quant/` (the caller directory
+AGENTS.md names) does not exist, and nothing in `vedex-engine/src` computes
 volatility or spreads. The **proposed** caller:
 
-* `truepoint/src/truepoint/generate/family_computation.py`: a
+* `vedex-engine/src/vedex/generate/family_computation.py`: a
   computation-fidelity template kind whose gold answer is a trailing
   range-volatility (M1) or OHLC-spread (M2) estimate over recorded OHLC, with
   the estimator, window, annualisation and invalid-bar policy stated. "Which
   volatility?" is exactly the ambiguity that makes a financial agent silently
   wrong. It is graded by the existing
-  `truepoint/src/truepoint/score/m02_computation.py` numeric tolerance, unchanged.
-* Engine test: a `truepoint/tests/` case asserting the template's gold value
+  `vedex-engine/src/vedex/score/m02_computation.py` numeric tolerance, unchanged.
+* Engine test: a `vedex-engine/tests/` case asserting the template's gold value
   equals `panelary.econ.features.range_volatility(...)` on a synthetic fixture.
   Synthetic data only; no sealed items or answer keys may appear in panelary.
-* **Firewall**: `truepoint/src/truepoint/_firewall.py` forbids `panelary` in
+* **Firewall**: `vedex-engine/src/vedex/_firewall.py` forbids `panelary` in
   `diagnose/`. These estimators may enter only through `generate/` (answer keys)
   or a future `quant/`, never `diagnose/`.
 

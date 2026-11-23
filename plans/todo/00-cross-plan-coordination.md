@@ -18,7 +18,7 @@
 
 | # | Plan | New home | Engine caller today | Headline finding (measured in the plan) |
 |---|---|---|---|---|
-| 1 | [forecast-evaluation-and-sharpe-inference](../done/forecast-evaluation-and-sharpe-inference.md) | `validation/` (new private modules) | **Yes, for M2**: truepoint's M07 calibration uses binned ECE; CORP replaces it | Jobson–Korkie over-rejects 8.5–8.9% at 5%; asymptotic Kupiec 9.7% at T=250; DM on nested models 0.3% vs Clark–West 5.5% |
+| 1 | [forecast-evaluation-and-sharpe-inference](../done/forecast-evaluation-and-sharpe-inference.md) | `validation/` (new private modules) | **Yes, for M2**: the engine's M07 calibration uses binned ECE; CORP replaces it | Jobson–Korkie over-rejects 8.5–8.9% at 5%; asymptotic Kupiec 9.7% at T=250; DM on nested models 0.3% vs Clark–West 5.5% |
 | 2 | [drift-monitoring-and-sequential-inference](drift-monitoring-and-sequential-inference.md) | `monitor/` | No | PSI > 0.1 fires 79% under no drift at n=100; KS flags 73% on a φ=0.9 feature; peeking at a Wilson CI misses 53.5% |
 | 3 | [covariance-and-market-state](covariance-and-market-state.md) | `covariance/` | No (proposed: `generate/family_computation.py`) | Sample covariance min-variance risk 2,095× optimal at N=500, T=252; dual-Gram path 3.3 ms/date at N=3,000 vs 1.85 s |
 | 4 | [label-weights-and-event-sampling](../done/label-weights-and-event-sampling.md) | `label/`, `core/_spans.py`, `sample/` | No (M1 hardens existing purge) | Vectorised purge identical and up to 800× faster; exact sequential bootstrap 90 ms (numba) at 100k labels |
@@ -167,7 +167,7 @@ code on 2026-09-29. The rest are as reported by the plan named, so reproduce the
   - B1, B2, B5 (plan 4 M1), B3, B4, B6 and B11.
   - The D1, D3 and D4 modules.
 - **Wave 1, what the engine can call soonest:**
-  - Plan 1 M1–M2: Sharpe inference and CORP, which replaces truepoint's binned ECE.
+  - Plan 1 M1–M2: Sharpe inference and CORP, which replaces the engine's binned ECE.
   - Plan 9 M1 (drawdowns).
   - Plan 5 M1–M2 (range volatility, EDGE).
   - Plan 3 M1–M2 (estimators, as-of engine).
@@ -185,9 +185,9 @@ code on 2026-09-29. The rest are as reported by the plan named, so reproduce the
 AGENTS.md says: *"No new public surface without a named caller in the engine, and a test in the
 engine that exercises it."*
 
-- `truepoint/src/truepoint/quant/` does not exist.
-- `truepoint/_firewall.py` forbids `diagnose/` from importing panelary.
-- Today truepoint imports only `panelary.leakage.audit`.
+- `vedex-engine/src/vedex/quant/` does not exist.
+- `vedex/_firewall.py` forbids `diagnose/` from importing panelary.
+- Today the engine imports only `panelary.leakage.audit`.
 
 The plans name these candidate callers:
 - **plan 1:** `inference/calibration.py`

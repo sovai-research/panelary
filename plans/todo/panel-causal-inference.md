@@ -282,8 +282,8 @@ record is `method, control, anticipation, base_period, covariate_timing, timing
 ("ex_post"|"as_of"), n_boot, seed, multiplier, solver, converged, n_iter,
 kkt_residual, critical_value, dropped_units, unidentified_cells, warnings`. Each result
 also has `.summary()`, `.aggregate(kind)` and `.to_json()`. `to_json()` includes
-`produced_by="panelary.counterfactual.<fn>@<version>"`, which mirrors truepoint's
-`Evidence.produced_by` convention (`truepoint/schema/diagnosis.py`).
+`produced_by="panelary.counterfactual.<fn>@<version>"`, which mirrors the Vedex engine's
+`Evidence.produced_by` convention (`vedex/schema/diagnosis.py`).
 
 ---
 
@@ -933,7 +933,7 @@ M0 + M1 alone is shippable and is what the caller needs. Do not start M3 before
 
 **Primary caller: staggered re-test effect measurement.**
 
-- AgenticFinance's journey is Assess → Diagnose → Recommend → Improve → Re-test.
+- Vedex's journey is Assess → Diagnose → Recommend → Improve → Re-test.
   Clients adopt a remediation at different dates. Legitimate remediations include
   changing the model, using deterministic code, adding human review, or not automating.
   Each client is re-assessed on **newly generated sealed test sets**, never a replay.
@@ -946,9 +946,9 @@ M0 + M1 alone is shippable and is what the caller needs. Do not start M3 before
 
 **Where it lives.**
 
-- In `truepoint/src/truepoint/quant/`, the caller location AGENTS.md names. It does not
+- In `vedex-engine/src/vedex/quant/`, the caller location AGENTS.md names. It does not
   exist yet.
-- **Not** in `diagnose/`: truepoint's `_firewall.py` forbids `diagnose/` from importing
+- **Not** in `diagnose/`: the engine's `_firewall.py` forbids `diagnose/` from importing
   `panelary`, because cause assignment must not see what we sell.
 - Results enter reports through `to_json()` with `produced_by`.
 - The estimator does not choose the report label. Whether an affiliated service

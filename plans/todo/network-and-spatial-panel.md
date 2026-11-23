@@ -20,13 +20,13 @@ statistics and as-of relationship graphs are not "pairwise".
 ## 0. The gate: read this before writing code
 
 AGENTS.md says: *"No new public surface without a named caller in the engine, and a
-test in the engine that exercises it."* I checked this on 2026-09-29. `truepoint/src`
-does not import `panelary` anywhere. `truepoint/src/truepoint/_firewall.py` forbids
+test in the engine that exercises it."* I checked this on 2026-09-29. `vedex-engine/src`
+does not import `panelary` anywhere. `vedex-engine/src/vedex/_firewall.py` forbids
 `diagnose/` from importing it (`FORBIDDEN_PRODUCT`). The caller directory that
-AGENTS.md names, `truepoint/src/truepoint/quant/`, does not exist yet. So:
+AGENTS.md names, `vedex-engine/src/vedex/quant/`, does not exist yet. So:
 
 * **M1** (as-of `EdgeTable`, knowledge-time validation and resolution, the `network_lag`
-  kernel) has a proposed caller (§15). It merges only once that truepoint test exists.
+  kernel) has a proposed caller (§15). It merges only once that engine test exists.
 * **M2–M7** are fully designed so the work is not lost, but they are **parked**. Each one
   needs its own named caller before anyone builds it.
 
@@ -931,7 +931,7 @@ measurement where marked "measure".
 
 | M | Contents | Exit criteria |
 |---|---|---|
-| **M1** | `EdgeTable` + validation → `ValidationReport`; resolution to epochs; `GraphSource`; canonical kernels (numpy + numba); `GroupGraph`; `network_lag` (direction, hops, missing policy, peer gap, `orthogonalize_own` with commonality controls); `_network_synth.py`; knowledge-time harness | Knowledge-time, prefix and kernel-parity suites green; commonality test green; perf budgets met; **truepoint caller test exists (§15)** |
+| **M1** | `EdgeTable` + validation → `ValidationReport`; resolution to epochs; `GraphSource`; canonical kernels (numpy + numba); `GroupGraph`; `network_lag` (direction, hops, missing policy, peer gap, `orthogonalize_own` with commonality controls); `_network_synth.py`; knowledge-time harness | Knowledge-time, prefix and kernel-parity suites green; commonality test green; perf budgets met; **engine caller test exists (§15)** |
 | **M2** | Builders: kNN / band / kernel (coordinates and characteristics), correlation (threshold / topk / MST / TMFG via `CorrSource`), BHP de-factored W, `combine`, rebuild schedules | networkx and scipy parity; T5, T6, T11 twins detected. Needs a caller. |
 | **M3** | Moran, Geary, LISA (analytic + permutation), Getis–Ord | exact-enumeration oracle; PySAL parity when installed |
 | **M4** | Centrality, `network_state` (+ Herskovic), diffusion bank, `graph_smooth`, total variation | networkx parity; batch-freeze test |
@@ -1017,25 +1017,25 @@ M1 alone is shippable. Do not start M2 before M1's knowledge-time suite is green
 
 ## 15. Caller (AGENTS.md: "No new public surface without a named caller in the engine, and a test in the engine that exercises it")
 
-**Verified state.** `truepoint/src` has zero `panelary` imports. `diagnose/` is
-firewalled from panelary. The AGENTS-named `truepoint/src/truepoint/quant/` does not exist.
+**Verified state.** `vedex-engine/src` has zero `panelary` imports. `diagnose/` is
+firewalled from panelary. The AGENTS-named `vedex-engine/src/vedex/quant/` does not exist.
 
-* **M1: proposed caller `truepoint/src/truepoint/quant/`** (to be created per AGENTS.md's
+* **M1: proposed caller `vedex-engine/src/vedex/quant/`** (to be created per AGENTS.md's
   "what to build first"). A customer's feature pipeline that uses relationship or peer data
   is audited by resolving its relationship table as-of. `EdgeTable.validate()` findings
   (`edges:knowledge_equals_valid_from`, `edges:classification_single_vintage`) and
   knowledge-time-invariance failures become `Evidence(kind=STATIC_ANALYSIS)` through
   `ValidationReport.to_evidence()`, next to `CompileResult.to_json()`. This is the graph
   analogue of the as-of join AGENTS.md already prioritises. **Required before merge:** a
-  truepoint test that constructs a small `EdgeTable` with a backfilled knowledge time and
+  engine test that constructs a small `EdgeTable` with a backfilled knowledge time and
   asserts that the finding appears in the report.
-* **M6 (CD\*, Conley): possible caller `truepoint/src/truepoint/inference/errorbars.py`,**
+* **M6 (CD\*, Conley): possible caller `vedex-engine/src/vedex/inference/errorbars.py`,**
   only if its owner decides that error bars over items sharing linked entities need
   dependence-robust inference. It is deterministic and LLM-free, so it is compatible with
   `score/` importing it. Not assumed.
 * **M2–M5 and M7: no caller identified. Do not build.**
 * Nothing here may be used to generate, store or reveal sealed ground-truth items. Any use
-  inside truepoint's `generate/` is a separate sealed-side decision outside this plan.
+  inside the engine's `generate/` is a separate sealed-side decision outside this plan.
   Under the STRATEGY non-funnel rule, where these capabilities appear in a recommendation
   they are disclosed as affiliated and sit alongside non-affiliated alternatives (networkx,
   PySAL).

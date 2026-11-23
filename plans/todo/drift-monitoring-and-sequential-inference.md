@@ -100,7 +100,7 @@ are genuinely non-exchangeable. The contract response is a **persistence refusal
 ### 1.3 Peeking at fixed-n intervals destroys their guarantee
 
 This is the monitoring failure mode. We took a Bernoulli(0.10) stream, computed a
-95% Wilson interval (the interval `truepoint/inference/errorbars.py:wilson_interval`
+95% Wilson interval (the interval `vedex/inference/errorbars.py:wilson_interval`
 uses), and checked it **at every step** from t = 30 to t = 10⁴. We ran 2000 paths.
 
 | Procedure | P(truth ever excluded) | Width at t = 10⁴ | Cost, 2000 streams × 10⁴ steps |
@@ -1020,7 +1020,7 @@ claims defensible.
 
 ## 13. Risks and open questions — resolve with a benchmark, not an opinion
 
-1. **Evidence kind.** The engine's `EvidenceKind` (truepoint `schema/diagnosis.py`)
+1. **Evidence kind.** The engine's `EvidenceKind` (`vedex/schema/diagnosis.py`)
    has no "statistical-test" member. The proposal emits `"arithmetic-recheck"` (a
    deterministic, seeded recomputation the reader can re-run) and asks the engine
    owner. `CONTRACT.md` is frozen, and this plan must not change it.
@@ -1053,7 +1053,7 @@ claims defensible.
 The user explicitly asked for this plan. The rule still applies to **what gets
 built**, and M1–M2 are scoped to it.
 
-**Most plausible caller: `truepoint/src/truepoint/quant/`.** It is named in
+**Most plausible caller: `vedex-engine/src/vedex/quant/`.** It is named in
 `AGENTS.md` as panelary's consumer and **does not exist yet**.
 
 Concrete call sites:
@@ -1066,15 +1066,15 @@ Concrete call sites:
    answers, seeds or answer-key columns (invariant 11).
 2. **Continuous monitoring of a client system's error rate.** Anytime-valid CS on 0/1
    marks, `e_process_paired` for "did the remediation help?" on matched items, and an
-   e-detector on the mark stream. Today `truepoint/inference/errorbars.py` computes a
+   e-detector on the mark stream. Today `vedex/inference/errorbars.py` computes a
    fixed-n Wilson interval. §1.3 shows what happens when that interval is re-checked
    continuously.
 
 **Constraints and honest risk:**
-- truepoint's `_firewall.py` forbids `diagnose/` from importing panelary, so these
+- the engine's `_firewall.py` forbids `diagnose/` from importing panelary, so these
   calls must live in `quant/` or `report/`.
-- truepoint does not depend on panelary today.
-- If the engine owner prefers a ~60-line in-repo CS in `truepoint/inference/`, then M2
+- the engine does not depend on panelary today.
+- If the engine owner prefers a ~60-line in-repo CS in `vedex/inference/`, then M2
   has **no caller** and should be kept private (`_sequential.py`, not exported) until
   one exists.
 

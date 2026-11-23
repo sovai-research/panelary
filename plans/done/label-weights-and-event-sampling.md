@@ -898,8 +898,8 @@ M5 is independent of M2–M4 and can run in parallel.
 
 `AGENTS.md`: *"No new public surface without a named caller in the engine, and a
 test in the engine that exercises it."* **This rule is not yet satisfied.** The
-engine (`truepoint`) does not import Panelary, `truepoint/src/truepoint/quant/`
-does not exist, and `truepoint/_firewall.py` forbids `diagnose/` from importing
+engine (`vedex-engine`, then Truepoint) does not import Panelary, `vedex-engine/src/vedex/quant/`
+does not exist, and `vedex/_firewall.py` forbids `diagnose/` from importing
 `panelary` at all. The user explicitly asked for this plan; the rule still
 applies to what ships.
 

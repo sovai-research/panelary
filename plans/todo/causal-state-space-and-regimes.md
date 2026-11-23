@@ -979,15 +979,15 @@ Resolve each with a benchmark, not an opinion.
 > **AGENTS.md: "No new public surface without a named caller in the engine, and a test in
 > the engine that exercises it."** Today this plan does **not** satisfy that rule.
 
-Truepoint does not import panelary anywhere (verified 2026-09-29). The only mentions are a
-firewall rule in `truepoint/src/truepoint/_firewall.py` that forbids `diagnose/` from
+The Vedex engine (then Truepoint) does not import panelary anywhere (verified 2026-09-29). The only mentions are a
+firewall rule in `vedex-engine/src/vedex/_firewall.py` that forbids `diagnose/` from
 importing it, and a `produced_by` example string in `schema/diagnosis.py`. No engine
 module needs a Kalman filter, HMM or BOCPD yet. Hence §10: build privately, and export
 only alongside the caller.
 
-**Consumed by:** truepoint M03 temporal integrity (as-of items whose leak signature is
+**Consumed by:** the engine's M03 temporal integrity (as-of items whose leak signature is
 *hindsight labelling*).
-**Caller:** `truepoint/src/truepoint/generate/family_asof.py`
+**Caller:** `vedex-engine/src/vedex/generate/family_asof.py`
 
 **Mechanism.** `score/m03_temporal.py` already flags a response that reads as the gold's
 `post_cutoff_value`. A new as-of template kind asks "which volatility regime (or trend
@@ -1011,10 +1011,10 @@ never imports panelary and the firewall stays untouched.
 
 **Other notes.**
 - **Secondary candidate (not a gate):** regime-conditional checks in
-  `truepoint/src/truepoint/validity/`.
+  `vedex-engine/src/vedex/validity/`.
 - **Firewall:** BOCPD-based model-degradation diagnosis must never live in `diagnose/`.
-- **Risk:** truepoint is local-only, with no remote or backup, so the caller's test is not
-  backed up.
+- **Risk (resolved):** when this was written the engine was local-only, with no remote or
+  backup. It has since been pushed to a remote, so the caller's test is backed up.
 - **Library-internal consumers** shape the API but do **not** satisfy the rule:
   - sibling 4: targets from `retrospective`;
   - sibling 9: `hamilton_filter` for MSM;

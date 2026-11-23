@@ -14,11 +14,11 @@
 > sweep over a *registry namespace* (specs are operators with parameters, not
 > expressions -- there is nothing to audit until someone binds arguments);
 > top-level `pn.*` exports (orchestrator-owned); the engine-side adapter in
-> `truepoint/quant/` (not this repo).
+> `vedex/quant/` (not this repo).
 
 **Stage:** build contract, written after the fact (the work had no plan file).
-**Customer:** the AgenticFinance assessment engine (`AGENTS.md`), caller
-`truepoint/src/truepoint/quant/` -- leakage findings become
+**Customer:** the Vedex assessment engine (`AGENTS.md`), caller
+`vedex-engine/src/vedex/quant/` -- leakage findings become
 `Evidence(kind=STATIC_ANALYSIS)` in an assessment report.
 
 ## What the engine consumes
